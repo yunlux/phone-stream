@@ -1,0 +1,702 @@
+#!/usr/bin/env python3
+# 手机串流 - 通用卡片式媒体控制窗
+# 每个设备一张卡片：连接/断开/设置 + 该设备的播放器/曲名/状态 + 播放控制。
+# 设备：mDNS 自动扫描 + 手动添加；配置自动保存到 stream_devices.json。
+import os
+import re
+import json
+import fcntl
+import signal
+import socket
+import subprocess
+import threading
+import time
+import tkinter as tk
+from tkinter import ttk
+from tkinter import simpledialog
+
+CONF_DIR = os.environ.get("PHONE_STREAM_HOME") or os.path.expanduser("~/.config/phone-stream")
+LOCK = os.path.join(CONF_DIR, "phone_media_controller.lock")
+CONFIG = os.path.join(CONF_DIR, "stream_devices.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+STREAM_SCRIPT = os.path.join(_HERE, "phone_audio_scrcpy")
+VIDEO_SCRIPT = os.path.join(_HERE, "phone_video_scrcpy")
+POLL_MS = 1500
+SCAN_MS = 6000
+
+PKG_NAMES = {
+    "com.luna.music": "汽水音乐",
+    "com.netease.cloudmusic": "网易云音乐",
+    "com.tencent.qqmusic": "QQ音乐",
+    "com.kugou.android": "酷狗音乐",
+    "cn.kuwo.player": "酷我音乐",
+    "com.ximalaya.ting.android": "喜马拉雅",
+    "com.google.android.apps.youtube.music": "YouTube Music",
+    "com.spotify.music": "Spotify",
+    "tv.danmaku.bili": "哔哩哔哩",
+    "com.ss.android.ugc.aweme": "抖音",
+    "org.telegram.messenger": "Telegram",
+    "com.openai.chatgpt": "ChatGPT",
+    "com.tencent.mm": "微信",
+}
+STATE_NAMES = {
+    "PLAYING": "▶ 播放中", "PAUSED": "⏸ 已暂停", "STOPPED": "⏹ 已停止",
+    "NONE": "— 无", "BUFFERING": "… 缓冲中", "ERROR": "⚠ 错误",
+    "FAST_FORWARDING": "⏩ 快进", "REWINDING": "⏪ 快退",
+    "SKIPPING_TO_NEXT": "⏭ 切歌", "SKIPPING_TO_PREVIOUS": "⏮ 切歌",
+}
+
+BG = "#1e1e2e"
+CARD = "#2a2a3c"
+FG = "#cdd6f4"
+SUB = "#a6adc8"
+DEF_FONT = "Source Han Serif CN"
+
+
+def _pids(pattern):
+    try:
+        out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,
+                             text=True, timeout=4).stdout
+        return [int(x) for x in out.split()]
+    except Exception:
+        return []
+
+
+def _tcp_ok(ip, port):
+    try:
+        with socket.create_connection((ip, int(port)), timeout=1.0):
+            return True
+    except Exception:
+        return False
+
+
+def _sanitize_id(t):
+    if ":" in t:
+        return re.sub(r"[.:]", "_", t)
+    return re.sub(r"[^A-Za-z0-9_]", "_", t)
+
+
+def stream_target(dev):
+    if dev.get("manual"):
+        return dev.get("addr", "")
+    return dev.get("serial") or dev.get("addr", "")
+
+
+def _pid_file(dev):
+    return os.path.join(CONF_DIR, "stream_" + _sanitize_id(stream_target(dev)) + ".pid")
+
+
+def _cache_file(dev):
+    return os.path.join(CONF_DIR, "stream_" + _sanitize_id(stream_target(dev)) + ".addr")
+
+
+def dev_connected(dev):
+    try:
+        pid = int(open(_pid_file(dev)).read().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def dev_addr(dev):
+    if not dev.get("manual"):
+        try:
+            a = open(_cache_file(dev)).read().strip()
+            if a:
+                return a
+        except Exception:
+            pass
+    return dev.get("addr", "")
+
+
+def start_stream(dev):
+    if dev_connected(dev) or not os.path.exists(STREAM_SCRIPT):
+        return
+    try:
+        subprocess.Popen(["setsid", STREAM_SCRIPT, stream_target(dev),
+                          dev.get("name", ""), str(dev.get("buffer", 200)),
+                          str(dev.get("codec", "flac")), str(dev.get("bitrate", "")),
+                          str(dev.get("source", "output"))],
+                         start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def stop_stream(dev):
+    addr = dev_addr(dev)
+    if addr:
+        dump = run_adb(addr, ["dumpsys", "media_session"])
+        info = parse_media(dump) if dump else None
+        if info and info.get("state") == "PLAYING":
+            run_adb(addr, ["input", "keyevent", "85"])
+            time.sleep(0.6)
+    try:
+        pid = int(open(_pid_file(dev)).read().strip())
+        os.killpg(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    for pid in _pids("phone_audio_scrcpy " + stream_target(dev)):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    try:
+        os.remove(_pid_file(dev))
+    except Exception:
+        pass
+
+
+def _mic_id(dev):
+    return _sanitize_id(stream_target(dev)) + "_mic"
+
+
+def _mic_pid_file(dev):
+    return os.path.join(CONF_DIR, "stream_" + _mic_id(dev) + ".pid")
+
+
+def mic_running(dev):
+    try:
+        pid = int(open(_mic_pid_file(dev)).read().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def start_mic(dev):
+    if mic_running(dev) or not os.path.exists(STREAM_SCRIPT):
+        return
+    try:
+        subprocess.Popen(["setsid", STREAM_SCRIPT, stream_target(dev),
+                          dev.get("name", "") + " MIC",
+                          str(dev.get("buffer", 200)), str(dev.get("codec", "flac")),
+                          str(dev.get("bitrate", "")), "mic", "_mic"],
+                         start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def stop_mic(dev):
+    try:
+        pid = int(open(_mic_pid_file(dev)).read().strip())
+        os.killpg(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    try:
+        os.remove(_mic_pid_file(dev))
+    except Exception:
+        pass
+
+
+def _vid_id(dev, mode):
+    return _sanitize_id(stream_target(dev)) + "_" + mode
+
+
+def _vid_pid_file(dev, mode):
+    return os.path.join(CONF_DIR, "stream_" + _vid_id(dev, mode) + ".pid")
+
+
+def video_running(dev, mode):
+    try:
+        pid = int(open(_vid_pid_file(dev, mode)).read().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def start_video(dev, mode):
+    if video_running(dev, mode) or not os.path.exists(VIDEO_SCRIPT):
+        return
+    try:
+        subprocess.Popen(["setsid", VIDEO_SCRIPT, stream_target(dev), mode,
+                          dev.get("name", "")], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def stop_video(dev, mode):
+    try:
+        pid = int(open(_vid_pid_file(dev, mode)).read().strip())
+        os.killpg(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    try:
+        os.remove(_vid_pid_file(dev, mode))
+    except Exception:
+        pass
+
+
+def scan_mdns():
+    try:
+        out = subprocess.run(["avahi-browse", "-rtp", "_adb-tls-connect._tcp"],
+                             capture_output=True, text=True, timeout=6).stdout
+    except Exception:
+        return []
+    found = {}
+    for line in out.splitlines():
+        if not line.startswith("="):
+            continue
+        f = line.split(";")
+        if len(f) < 10 or f[2] != "IPv4":
+            continue
+        svc, ip, port, txt = f[3], f[7], f[8], f[9]
+        serial = ""
+        m = re.search(r'"serial=([^"]+)"', txt)
+        if m:
+            serial = m.group(1)
+        else:
+            m = re.match(r"adb-(.+)-[^-]+$", svc)
+            if m:
+                serial = m.group(1)
+        name = ""
+        for key in ("given_name", "name"):
+            m = re.search(r'"' + key + r'=([^"]+)"', txt)
+            if m:
+                name = m.group(1)
+                break
+        if not _tcp_ok(ip, port):
+            continue
+        addr = ip + ":" + port
+        key = serial or addr
+        found[key] = {"serial": serial, "name": name or serial or addr,
+                      "addr": addr, "manual": False}
+    return list(found.values())
+
+
+def load_config():
+    try:
+        with open(CONFIG) as fh:
+            data = json.load(fh)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def save_config(devs):
+    try:
+        os.makedirs(CONF_DIR, exist_ok=True)
+        with open(CONFIG, "w") as fh:
+            json.dump(devs, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def run_adb(dev, args, timeout=6):
+    try:
+        return subprocess.run(["adb", "-s", dev, "shell"] + args,
+                              capture_output=True, text=True, timeout=timeout).stdout
+    except Exception:
+        return ""
+
+
+def parse_media(dump):
+    m = re.search(r"Media button session is (\S+) \(userId=\d+\)", dump)
+    active_tag = m.group(1) if m else None
+    sessions, cur = [], None
+    for line in dump.splitlines():
+        h = re.match(r"^    (\S+)\s+(\S+)\s+\(userId=\d+\)\s*$", line)
+        if h:
+            if cur:
+                sessions.append(cur)
+            cur = {"tag": h.group(2)}
+            continue
+        if cur is None:
+            continue
+        s = line.strip()
+        if s.startswith("package="):
+            cur["package"] = s.split("=", 1)[1]
+        elif s.startswith("state=PlaybackState"):
+            mm = re.search(r"state=(\w+)\(", s)
+            if mm:
+                cur["state"] = mm.group(1)
+        elif s.startswith("metadata:"):
+            mm = re.search(r"description=(.*)$", s)
+            if mm and mm.group(1) != "null":
+                cur["description"] = mm.group(1)
+    if cur:
+        sessions.append(cur)
+    pick = None
+    if active_tag:
+        pick = next((x for x in sessions if x.get("tag") == active_tag), None)
+    if not pick:
+        for st in ("PLAYING", "PAUSED", "BUFFERING"):
+            pick = next((x for x in sessions if x.get("state") == st), None)
+            if pick:
+                break
+    if not pick:
+        pick = next((x for x in sessions if x.get("description")), None)
+    if not pick:
+        return None
+    desc = pick.get("description")
+    title = artist = None
+    if desc:
+        parts = [p.strip() for p in desc.rsplit(",", 2)]
+        if len(parts) >= 3 and parts[-1].lower() in ("null", ""):
+            title = parts[0]
+            artist = parts[1] if parts[1].lower() != "null" else None
+        elif len(parts) >= 3:
+            title, artist = parts[0], parts[1]
+        else:
+            title = desc
+    return {"package": pick.get("package"), "state": pick.get("state"),
+            "title": title, "artist": artist, "desc": desc}
+
+
+def dev_key(d):
+    return d.get("serial") or d.get("addr")
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.devices = load_config()
+        self.cards = {}
+        root.title("手机串流")
+        root.geometry("580x620")
+        root.minsize(520, 300)
+        root.configure(bg=BG)
+        self._build()
+        self._sync_cards()
+        self.root.after(200, self.refresh)
+        self.root.after(400, self.force_scan)
+        self.root.after(SCAN_MS, self._auto_scan)
+
+    def _build(self):
+        top = tk.Frame(self.root, bg=BG)
+        top.pack(fill=tk.X, padx=14, pady=(12, 6))
+        tk.Label(top, text="手机串流", bg=BG, fg="#89b4fa",
+                 font=(DEF_FONT, 14, "bold")).pack(side=tk.LEFT)
+        tk.Button(top, text="＋ 手动添加", command=self.add_manual).pack(side=tk.RIGHT)
+        tk.Button(top, text="⟳ 扫描", command=self.force_scan).pack(side=tk.RIGHT, padx=4)
+        self.card_box = tk.Frame(self.root, bg=BG)
+        self.card_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        self.placeholder = None
+
+    def _make_card(self, d):
+        bg = CARD
+        card = tk.Frame(self.card_box, bg=bg, highlightbackground="#45475a",
+                        highlightthickness=1)
+        card.pack(fill=tk.X, pady=6, padx=2)
+
+        head = tk.Frame(card, bg=bg)
+        head.pack(fill=tk.X, padx=12, pady=(9, 2))
+        dot = tk.Label(head, text="○", bg=bg, fg="#f38ba8", font=(DEF_FONT, 11))
+        dot.pack(side=tk.LEFT)
+        tag = " [手动]" if d.get("manual") else ""
+        name = tk.Label(head, text=(d.get("name", "?") + tag), bg=bg, fg="#89b4fa",
+                        font=(DEF_FONT, 12, "bold"))
+        name.pack(side=tk.LEFT, padx=(4, 8))
+        addr = tk.Label(head, text=d.get("addr", ""), bg=bg, fg="#6c7086",
+                        font=(DEF_FONT, 9))
+        addr.pack(side=tk.LEFT)
+        setb = tk.Button(head, text="⚙", width=3,
+                         command=lambda dd=d: self.open_settings(dd))
+        setb.pack(side=tk.RIGHT, padx=2)
+        micb = tk.Button(head, text="🎤", width=3,
+                         command=lambda dd=d: self.do_mic(dd))
+        micb.pack(side=tk.RIGHT, padx=2)
+        camb = tk.Button(head, text="📷", width=3,
+                         command=lambda dd=d: self.do_camera(dd))
+        camb.pack(side=tk.RIGHT, padx=2)
+        scrb = tk.Button(head, text="🖥", width=3,
+                         command=lambda dd=d: self.do_screen(dd))
+        scrb.pack(side=tk.RIGHT, padx=2)
+        disc = tk.Button(head, text="断开", width=6,
+                         command=lambda dd=d: self.do_disconnect(dd))
+        disc.pack(side=tk.RIGHT, padx=2)
+        conn = tk.Button(head, text="连接", width=6,
+                         command=lambda dd=d: self.do_connect(dd))
+        conn.pack(side=tk.RIGHT, padx=2)
+
+        player = tk.Label(card, text="— 无媒体 —", bg=bg, fg="#89b4fa",
+                          font=(DEF_FONT, 13, "bold"), anchor="w")
+        player.pack(fill=tk.X, padx=14, pady=(4, 0))
+        title = tk.Label(card, text="", bg=bg, fg=FG, font=(DEF_FONT, 11),
+                         anchor="w", justify="left", wraplength=520)
+        title.pack(fill=tk.X, padx=14)
+        artist = tk.Label(card, text="", bg=bg, fg=SUB, font=(DEF_FONT, 9), anchor="w")
+        artist.pack(fill=tk.X, padx=14)
+
+        bar = tk.Frame(card, bg=bg)
+        bar.pack(anchor="w", padx=12, pady=(5, 10))
+        tk.Button(bar, text="⏮ 上一曲", width=8,
+                  command=lambda dd=d: self.send_key(dd, 88)).pack(side=tk.LEFT, padx=2)
+        pp = tk.Button(bar, text="▶ 播放", width=8,
+                       command=lambda dd=d: self.send_key(dd, 85))
+        pp.pack(side=tk.LEFT, padx=2)
+        tk.Button(bar, text="⏭ 下一曲", width=8,
+                  command=lambda dd=d: self.send_key(dd, 87)).pack(side=tk.LEFT, padx=2)
+        tk.Button(bar, text="🔉", width=3,
+                  command=lambda dd=d: self.send_key(dd, 25)).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(bar, text="🔊", width=3,
+                  command=lambda dd=d: self.send_key(dd, 24)).pack(side=tk.LEFT, padx=2)
+        tk.Button(bar, text="⏹", width=3,
+                  command=lambda dd=d: self.send_key(dd, 86)).pack(side=tk.LEFT, padx=4)
+        state = tk.Label(bar, text="", bg=bg, fg="#6c7086", font=(DEF_FONT, 9))
+        state.pack(side=tk.LEFT, padx=8)
+
+        return {"frame": card, "dot": dot, "name": name, "addr": addr,
+                "conn": conn, "disc": disc, "micb": micb, "camb": camb, "scrb": scrb,
+                "player": player, "title": title, "artist": artist, "pp": pp,
+                "state": state, "dev": d}
+
+    def _sync_cards(self):
+        keys = [dev_key(d) for d in self.devices]
+        for k in list(self.cards):
+            if k not in keys:
+                self.cards[k]["frame"].destroy()
+                del self.cards[k]
+        for d in self.devices:
+            k = dev_key(d)
+            if k not in self.cards:
+                self.cards[k] = self._make_card(d)
+        if not self.devices:
+            if self.placeholder is None:
+                self.placeholder = tk.Label(
+                    self.card_box, text="（未发现设备，点 ⟳扫描 或 ＋手动添加）",
+                    bg=BG, fg="#6c7086", font=(DEF_FONT, 11))
+                self.placeholder.pack(anchor="w", pady=8)
+        elif self.placeholder is not None:
+            self.placeholder.destroy()
+            self.placeholder = None
+        self._update_conn_states()
+
+    def _update_conn_states(self):
+        for k, c in self.cards.items():
+            d = c["dev"]
+            connected = dev_connected(d)
+            c["micb"].config(text="🎤✓" if mic_running(d) else "🎤",
+                             fg="#a6e3a1" if mic_running(d) else "#f38ba8")
+            c["camb"].config(text="📷✓" if video_running(d, "camera") else "📷",
+                             fg="#a6e3a1" if video_running(d, "camera") else "#f38ba8")
+            c["scrb"].config(text="🖥✓" if video_running(d, "screen") else "🖥",
+                             fg="#a6e3a1" if video_running(d, "screen") else "#f38ba8")
+            c["dot"].config(text="●" if connected else "○",
+                            fg="#a6e3a1" if connected else "#f38ba8")
+            if connected:
+                c["conn"].config(state=tk.DISABLED)
+                c["disc"].config(state=tk.NORMAL)
+            else:
+                c["conn"].config(state=tk.NORMAL)
+                c["disc"].config(state=tk.DISABLED)
+
+    def force_scan(self):
+        threading.Thread(target=self._scan_and_merge, daemon=True).start()
+
+    def _auto_scan(self):
+        threading.Thread(target=self._scan_and_merge, daemon=True).start()
+        self.root.after(SCAN_MS, self._auto_scan)
+
+    def _scan_and_merge(self):
+        found = scan_mdns()
+        if found:
+            by_key = {dev_key(d): d for d in self.devices}
+            changed = False
+            for f in found:
+                key = dev_key(f)
+                if key in by_key:
+                    cur = by_key[key]
+                    if cur.get("addr") != f["addr"]:
+                        cur["addr"] = f["addr"]
+                        changed = True
+                    if not cur.get("name") and f.get("name"):
+                        cur["name"] = f["name"]
+                        changed = True
+                else:
+                    self.devices.append(f)
+                    changed = True
+            if changed:
+                save_config(self.devices)
+        self.root.after(0, self._sync_cards)
+
+    def open_settings(self, dev):
+        win = tk.Toplevel(self.root)
+        win.title("设置 - " + dev.get("name", ""))
+        win.configure(bg=BG)
+        win.geometry("460x350")
+        win.transient(self.root)
+        win.grab_set()
+
+        buffer_var = tk.StringVar(value=str(dev.get("buffer", 200)))
+        c = dev.get("codec", "flac")
+        codec_var = tk.StringVar(value="flac (无损)" if c == "flac" else c)
+        try:
+            br = str(int(int(dev.get("bitrate", 256000)) / 1000))
+        except Exception:
+            br = "256"
+        bitrate_var = tk.StringVar(value=br)
+        source_var = tk.StringVar(value=dev.get("source", "output"))
+
+        def row(r, label):
+            tk.Label(win, text=label, bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
+                row=r, column=0, sticky="w", padx=12, pady=8)
+
+        row(0, "延迟 (ms)")
+        tk.Spinbox(win, from_=0, to=2000, increment=10, textvariable=buffer_var,
+                   width=10).grid(row=0, column=1, sticky="w")
+        row(1, "编解码")
+        ttk.Combobox(win, values=["flac (无损)", "opus", "aac"], textvariable=codec_var,
+                     state="readonly", width=14).grid(row=1, column=1, sticky="w")
+        row(2, "码率 (kbps)")
+        ttk.Combobox(win, values=["96", "128", "192", "256", "320", "510"],
+                     textvariable=bitrate_var, width=14).grid(row=2, column=1, sticky="w")
+        tk.Label(win, text="(flac 无损时码率无效)", bg=BG, fg="#6c7086",
+                 font=(DEF_FONT, 8)).grid(row=3, column=1, sticky="w")
+        row(4, "音频源")
+        ttk.Combobox(win, values=["output", "playback", "mic"], textvariable=source_var,
+                     state="readonly", width=14).grid(row=4, column=1, sticky="w")
+        tk.Label(win, text="(output=输出/playback=播放/mic=麦克风)", bg=BG, fg="#6c7086",
+                 font=(DEF_FONT, 8)).grid(row=5, column=1, sticky="w")
+
+        def save():
+            try:
+                dev["buffer"] = int(float(buffer_var.get()))
+            except Exception:
+                pass
+            dev["codec"] = codec_var.get().split()[0]
+            try:
+                dev["bitrate"] = int(float(bitrate_var.get()) * 1000)
+            except Exception:
+                pass
+            dev["source"] = source_var.get()
+            save_config(self.devices)
+            win.destroy()
+
+        btns = tk.Frame(win, bg=BG)
+        btns.grid(row=6, column=0, columnspan=2, pady=16)
+        tk.Button(btns, text="保存", width=10, command=save).pack(side=tk.LEFT, padx=6)
+        tk.Button(btns, text="取消", width=10, command=win.destroy).pack(side=tk.LEFT, padx=6)
+
+    def add_manual(self):
+        addr = simpledialog.askstring("手动添加设备", "地址（IP:端口，例如 192.168.1.50:5555）:",
+                                      parent=self.root)
+        if not addr:
+            return
+        addr = addr.strip()
+        name = simpledialog.askstring("手动添加设备", "显示名称:", parent=self.root)
+        name = (name or addr).strip()
+        for d in self.devices:
+            if d.get("manual") and d.get("addr") == addr:
+                d["name"] = name
+                save_config(self.devices)
+                self._sync_cards()
+                return
+        self.devices.append({"serial": addr, "name": name, "addr": addr, "manual": True,
+                             "buffer": 200, "codec": "flac", "bitrate": 256000})
+        save_config(self.devices)
+        self._sync_cards()
+
+    def do_connect(self, dev):
+        threading.Thread(target=start_stream, args=(dev,), daemon=True).start()
+        self.root.after(2000, self._sync_cards)
+        self.root.after(2500, self.refresh)
+
+    def do_disconnect(self, dev):
+        threading.Thread(target=stop_stream, args=(dev,), daemon=True).start()
+        self.root.after(1800, self._sync_cards)
+        self.root.after(1800, self.refresh)
+
+    def do_mic(self, dev):
+        # 切换该设备的麦克风声音流（独立于普通音频流）
+        if mic_running(dev):
+            threading.Thread(target=stop_mic, args=(dev,), daemon=True).start()
+        else:
+            threading.Thread(target=start_mic, args=(dev,), daemon=True).start()
+        self.root.after(1600, self._sync_cards)
+        self.root.after(2000, self.refresh)
+
+    def do_camera(self, dev):
+        self._toggle_video(dev, "camera")
+
+    def do_screen(self, dev):
+        self._toggle_video(dev, "screen")
+
+    def _toggle_video(self, dev, mode):
+        if video_running(dev, mode):
+            threading.Thread(target=stop_video, args=(dev, mode), daemon=True).start()
+        else:
+            threading.Thread(target=start_video, args=(dev, mode), daemon=True).start()
+        self.root.after(1600, self._sync_cards)
+
+    def send_key(self, dev, code):
+        addr = dev_addr(dev)
+        if not addr:
+            return
+        threading.Thread(target=lambda: run_adb(addr, ["input", "keyevent", str(code)]),
+                         daemon=True).start()
+        self.root.after(400, self.refresh)
+
+    def refresh(self):
+        for d in list(self.devices):
+            threading.Thread(target=self._poll_one, args=(d,), daemon=True).start()
+        self.root.after(POLL_MS, self.refresh)
+
+    def _poll_one(self, d):
+        connected = dev_connected(d)
+        addr = dev_addr(d)
+        info = None
+        if addr:
+            dump = run_adb(addr, ["dumpsys", "media_session"])
+            info = parse_media(dump) if dump else None
+        self.root.after(0, lambda: self._update_card(d, connected, info))
+
+    def _update_card(self, d, connected, info):
+        c = self.cards.get(dev_key(d))
+        if not c:
+            return
+        c["dot"].config(text="●" if connected else "○",
+                        fg="#a6e3a1" if connected else "#f38ba8")
+        if connected:
+            c["conn"].config(state=tk.DISABLED)
+            c["disc"].config(state=tk.NORMAL)
+        else:
+            c["conn"].config(state=tk.NORMAL)
+            c["disc"].config(state=tk.DISABLED)
+        mic = mic_running(d)
+        c["micb"].config(text="🎤✓" if mic else "🎤",
+                         fg="#a6e3a1" if mic else "#f38ba8")
+        cam = video_running(d, "camera")
+        c["camb"].config(text="📷✓" if cam else "📷",
+                         fg="#a6e3a1" if cam else "#f38ba8")
+        scr = video_running(d, "screen")
+        c["scrb"].config(text="🖥✓" if scr else "🖥",
+                         fg="#a6e3a1" if scr else "#f38ba8")
+        if not info or not info.get("package"):
+            c["player"].config(text="— 无媒体 —")
+            c["title"].config(text="")
+            c["artist"].config(text="")
+            c["state"].config(text="")
+            c["pp"].config(text="▶ 播放")
+            return
+        pkg = info.get("package")
+        c["player"].config(text=PKG_NAMES.get(pkg, pkg))
+        c["title"].config(text=info.get("title") or "（无标题）")
+        c["artist"].config(text=info.get("artist") or "")
+        st = info.get("state") or "NONE"
+        c["state"].config(text=STATE_NAMES.get(st, st))
+        c["pp"].config(text="⏸ 暂停" if st == "PLAYING" else "▶ 播放")
+
+
+def main():
+    os.makedirs(CONF_DIR, exist_ok=True)
+    lf = open(LOCK, "w")
+    try:
+        fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

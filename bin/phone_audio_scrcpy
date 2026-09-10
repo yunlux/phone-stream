@@ -1,0 +1,132 @@
+#!/bin/bash
+# 通用手机声音串流（可选输出到指定 PipeWire sink）
+# 用法: phone_audio_scrcpy <序列号|IP:端口> [显示名]
+#   序列号: 通过 mDNS 自动发现该设备的实时 IP:端口（手机换 IP/端口也能连）
+#   IP:端口: 直接使用（手动添加的设备）
+# 特性: 单实例(按设备)、断线自动重连、FLAC 无损、无窗口(纯后台)
+set -u
+
+TARGET="${1:-}"
+NAME="${2:-$TARGET}"
+BUFFER="${3:-200}"
+CODEC="${4:-flac}"
+BITRATE="${5:-}"
+SOURCE="${6:-output}"
+SUFFIX="${7:-}"
+if [[ -z $TARGET ]]; then
+    echo "用法: phone_audio_scrcpy <序列号|IP:端口> [显示名] [缓冲ms] [flac|opus|aac] [码率bps] [output|playback|mic] [流后缀]"
+    exit 1
+fi
+
+WAIT_TIMEOUT=120
+INTERVAL=2
+CACHE_DIR="${PHONE_STREAM_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/phone-stream}"
+mkdir -p "$CACHE_DIR"
+
+if [[ $TARGET == *:* ]]; then
+    KIND=addr
+    ID=$(printf '%s' "$TARGET" | tr '.:' '__')$SUFFIX
+else
+    KIND=serial
+    ID=$(printf '%s' "$TARGET" | tr -c 'A-Za-z0-9_' '_')$SUFFIX
+fi
+SAFE_NAME=$(printf '%s' "$NAME" | tr -d '"\\')
+CACHE_FILE="$CACHE_DIR/stream_$ID.addr"
+PID_FILE="$CACHE_DIR/stream_$ID.pid"
+
+exec 9>"$CACHE_DIR/stream_$ID.lock"
+flock -n 9 || { echo "已在串流: $NAME"; exit 0; }
+
+echo $$ > "$PID_FILE"
+cleanup() { kill 0 2>/dev/null; rm -f "$PID_FILE"; exit 0; }
+trap cleanup TERM INT
+rm -f "$PID_FILE" 2>/dev/null; echo $$ > "$PID_FILE"
+
+LOG() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+dev_state() { adb devices | awk -v a="$1" '$1==a{print $2}'; }
+save_addr() { printf '%s' "$1" > "$CACHE_FILE"; }
+load_addr() { [[ -r $CACHE_FILE ]] && head -1 "$CACHE_FILE" || true; }
+
+discover() {
+    # 按序列号收集候选（mDNS 可能残留旧记录），逐个 TCP 探测取在听的
+    local line addr first=""
+    while IFS= read -r line; do
+        addr=$(awk -F';' '{print $8":"$9}' <<<"$line")
+        [[ -z $first ]] && first="$addr"
+        if timeout 1 bash -c "exec 3<>/dev/tcp/${addr%:*}/${addr#*:}" 2>/dev/null; then
+            echo "$addr"
+            return 0
+        fi
+    done < <(avahi-browse -rtp _adb-tls-connect._tcp 2>/dev/null | grep '=;.*;IPv4;' |
+             grep -E ";adb-${TARGET}-|\"serial=${TARGET}\"" | sort -u)
+    [[ -n $first ]] && echo "$first"
+}
+
+resolve_addr() {
+    if [[ $KIND == addr ]]; then
+        echo "$TARGET"
+        return
+    fi
+    local a
+    a=$(load_addr)
+    if [[ -n $a ]] && [[ $(dev_state "$a") == device ]]; then
+        echo "$a"
+        return
+    fi
+    a=$(discover)
+    if [[ -n $a ]]; then
+        echo "$a"
+        return
+    fi
+    load_addr
+}
+
+ADDR=$(resolve_addr)
+if [[ -z $ADDR ]]; then
+    LOG "未找到设备: $TARGET"
+    exit 1
+fi
+
+LOG "串流启动: $NAME ($ADDR)"
+while true; do
+    adb connect "$ADDR" >/dev/null 2>&1
+    waited=0
+    while [[ $(dev_state "$ADDR") != device ]]; do
+        sleep "$INTERVAL"
+        waited=$((waited + INTERVAL))
+        if [[ $KIND == serial ]]; then
+            a=$(discover)
+            [[ -n $a ]] && ADDR="$a"
+        fi
+        adb connect "$ADDR" >/dev/null 2>&1
+        [[ $(dev_state "$ADDR") == device ]] && break
+        if ((waited >= WAIT_TIMEOUT )); then
+            LOG "连接超时: $ADDR"
+            exit 1
+        fi
+    done
+    save_addr "$ADDR"
+
+    AUDIO_ARGS=(--audio-source="$SOURCE" --audio-codec="$CODEC" --audio-buffer="$BUFFER")
+    case "$CODEC" in
+        opus|aac) [[ -n $BITRATE ]] && AUDIO_ARGS+=(--audio-bit-rate="$BITRATE") ;;
+    esac
+    ENVP=()
+    if [[ -n ${PHONE_STREAM_SINK:-} ]]; then
+        ENVP=(env PIPEWIRE_PROPS="{ \"target.object\": \"${PHONE_STREAM_SINK}\", \"node.name\": \"stream_${ID}\", \"node.description\": \"${SAFE_NAME}\" }")
+    fi
+    "${ENVP[@]}" scrcpy --window-title="$SAFE_NAME" -s "$ADDR" --no-video --no-window "${AUDIO_ARGS[@]}"
+    rc=$?
+    if ((rc == 0 || rc == 130)); then
+        LOG "已退出"
+        exit 0
+    fi
+    LOG "连接中断(rc=${rc})，尝试重连..."
+    rm -f "$CACHE_FILE" 2>/dev/null
+    sleep 3
+    ADDR=$(resolve_addr)
+    if [[ -z $ADDR ]]; then
+        LOG "设备丢失: $TARGET"
+        exit 1
+    fi
+done
