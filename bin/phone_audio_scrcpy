@@ -121,6 +121,8 @@ while true; do
         ENVP=(env PIPEWIRE_PROPS="{ \"target.object\": \"${PHONE_STREAM_SINK}\", \"node.name\": \"stream_${ID}\", \"node.description\": \"${SAFE_NAME}\", \"application.name\": \"${SAFE_NAME}\", \"media.name\": \"\" }")
     fi
     "${ENVP[@]}" scrcpy --window-title="$SAFE_NAME" -s "$ADDR" --no-video --no-window "${AUDIO_ARGS[@]}"
+    child=$!
+    wait "$child"
     rc=$?
     if ((rc == 0 || rc == 130)); then
         LOG "exited"

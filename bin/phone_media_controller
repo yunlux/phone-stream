@@ -196,13 +196,43 @@ SUB = "#a6adc8"
 DEF_FONT = "Source Han Serif CN"
 
 
-def _pids(pattern):
+def _running_procs():
+    # [(pid, args)] for our own stream scripts ONLY (precise prefix -> no self-match).
+    res = []
     try:
-        out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,
-                             text=True, timeout=4).stdout
-        return [int(x) for x in out.split()]
+        out = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True,
+                             text=True, timeout=5).stdout
     except Exception:
-        return []
+        return res
+    prefs = ("/bin/bash " + STREAM_SCRIPT, "/bin/bash " + VIDEO_SCRIPT)
+    for ln in out.splitlines():
+        s = ln.strip()
+        parts = s.split(None, 1)
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].startswith(prefs):
+            res.append((int(parts[0]), parts[1]))
+    return res
+
+
+def _pids(pattern):
+    return [pid for pid, args in _running_procs() if pattern in args]
+
+
+def _kill_tree(pid):
+    # Kill a stream's process group (and the pid itself), escalating TERM -> KILL.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except Exception:
+            pass
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            pass
+        time.sleep(0.4)
+        try:
+            os.kill(pid, 0)
+        except Exception:
+            return
 
 
 def _tcp_ok(ip, port):
@@ -348,6 +378,8 @@ def _cache_file(dev):
 
 
 def dev_connected(dev):
+    if stream_pids(dev, "audio"):
+        return True
     try:
         pid = int(open(_pid_file(dev)).read().strip())
         os.kill(pid, 0)
@@ -388,6 +420,8 @@ def dev_addr(dev):
 def start_stream(dev):
     if dev_connected(dev) or not os.path.exists(STREAM_SCRIPT):
         return
+    if stream_pids(dev, "mic"):   # audio & mic conflict on the same phone -> keep them exclusive
+        stop_mic(dev)
     try:
         buf, codec, br = media_params(dev, "audio")
         subprocess.Popen(["setsid", STREAM_SCRIPT, script_target(dev, "audio"),
@@ -410,22 +444,11 @@ def stop_stream(dev):
             run_adb(addr, ["input", "keyevent", "85"])
             time.sleep(0.6)
     try:
-        pid = int(open(_pid_file(dev)).read().strip())
-        os.killpg(pid, signal.SIGTERM)
+        _kill_tree(int(open(_pid_file(dev)).read().strip()))
     except Exception:
         pass
-    for pid in _pids("phone_audio_scrcpy " + stream_target(dev)):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except Exception:
-            pass
-    ser = dev.get("serial") or ""
-    if ser and ":" not in ser:
-        for pid in _pids("phone_audio_scrcpy usb:" + ser):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except Exception:
-                pass
+    for pid in stream_pids(dev, "audio"):
+        _kill_tree(pid)
     try:
         os.remove(_pid_file(dev))
     except Exception:
@@ -441,6 +464,8 @@ def _mic_pid_file(dev):
 
 
 def mic_running(dev):
+    if stream_pids(dev, "mic"):
+        return True
     try:
         pid = int(open(_mic_pid_file(dev)).read().strip())
         os.kill(pid, 0)
@@ -452,6 +477,8 @@ def mic_running(dev):
 def start_mic(dev):
     if mic_running(dev) or not os.path.exists(STREAM_SCRIPT):
         return
+    if stream_pids(dev, "audio"):   # audio & mic conflict on the same phone -> keep them exclusive
+        stop_stream(dev)
     try:
         buf, codec, br = media_params(dev, "mic")
         subprocess.Popen(["setsid", STREAM_SCRIPT, script_target(dev, "mic"),
@@ -465,10 +492,11 @@ def start_mic(dev):
 
 def stop_mic(dev):
     try:
-        pid = int(open(_mic_pid_file(dev)).read().strip())
-        os.killpg(pid, signal.SIGTERM)
+        _kill_tree(int(open(_mic_pid_file(dev)).read().strip()))
     except Exception:
         pass
+    for pid in stream_pids(dev, "mic"):
+        _kill_tree(pid)
     try:
         os.remove(_mic_pid_file(dev))
     except Exception:
@@ -484,6 +512,9 @@ def _vid_pid_file(dev, mode):
 
 
 def video_running(dev, mode):
+    role = "screen" if mode == "screen" else "camera"
+    if stream_pids(dev, role):
+        return True
     try:
         pid = int(open(_vid_pid_file(dev, mode)).read().strip())
         os.kill(pid, 0)
@@ -497,6 +528,8 @@ def start_video(dev, mode):
         return
     try:
         kind = "screen" if mode == "screen" else "camera"
+        for pid in stream_pids(dev, kind):   # clear any orphan for this role first
+            _kill_tree(pid)
         size, fps, br, codec = video_params(dev, mode)
         subprocess.Popen(["setsid", VIDEO_SCRIPT, script_target(dev, kind),
                           mode, dev.get("name", ""), size, fps, br, codec],
@@ -508,11 +541,13 @@ def start_video(dev, mode):
 
 
 def stop_video(dev, mode):
+    role = "screen" if mode == "screen" else "camera"
     try:
-        pid = int(open(_vid_pid_file(dev, mode)).read().strip())
-        os.killpg(pid, signal.SIGTERM)
+        _kill_tree(int(open(_vid_pid_file(dev, mode)).read().strip()))
     except Exception:
         pass
+    for pid in stream_pids(dev, role):
+        _kill_tree(pid)
     try:
         os.remove(_vid_pid_file(dev, mode))
     except Exception:
@@ -831,6 +866,26 @@ def node_base(dev):
     s = (dev.get("short") or dev.get("name") or "").strip()
     s = re.sub(r"^(redmi|xiaomi|mi)\s+", "", s, flags=re.I).strip()
     return s.lower() or "phone"
+
+
+def stream_pids(dev, role):
+    # Live pids of this device's stream for the given role (audio/mic/screen/camera),
+    # detected from the process list so it works even if a pid file went missing.
+    tgt = stream_target(dev)
+    base = node_base(dev)
+    res = []
+    for pid, args in _running_procs():
+        if tgt and tgt not in args:
+            continue
+        if role == "audio" and (base + " audio") in args:
+            res.append(pid)
+        elif role == "mic" and (base + " mic") in args:
+            res.append(pid)
+        elif role == "screen" and "phone_video_scrcpy" in args and " screen " in args:
+            res.append(pid)
+        elif role == "camera" and "phone_video_scrcpy" in args and (" camera " in args or " camera-back " in args):
+            res.append(pid)
+    return res
 
 
 class App:

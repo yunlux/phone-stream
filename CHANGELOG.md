@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.11 (2026-09-11)
+
+### Fixed
+- Streams are detected from the live process list, so the audio / mic / screen / camera buttons reflect reality even if a pid file went missing; stopping kills the process group (TERM → KILL) and clears orphans before a new start
+- Audio and microphone are mutually exclusive per phone (they conflict on the same device): starting one stops the other
+- Scripts run scrcpy in the background and `wait`, so a stop takes effect immediately (the old foreground run delayed the TERM trap, which left orphaned processes and made the mic button appear stuck)
+
 ## v0.2.10 (2026-09-11)
 
 ### Changed

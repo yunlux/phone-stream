@@ -138,7 +138,9 @@ while true; do
     done
     [[ $KIND != usb ]] && save_addr "$ADDR"
 
-    scrcpy --window-title="$WINTITLE" -s "$ADDR" --no-audio "${VID_ARGS[@]}"
+    scrcpy --window-title="$WINTITLE" -s "$ADDR" --no-audio "${VID_ARGS[@]}" &
+    child=$!
+    wait "$child"
     rc=$?
     if ((rc == 0 || rc == 130)); then
         LOG "exited"
