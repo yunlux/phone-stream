@@ -45,7 +45,7 @@ CLI only:
 
 ```bash
 phone_audio_scrcpy <serial|IP:port> [name] [buffer_ms] [flac|opus|aac] [bitrate] [output|playback|mic]
-phone_video_scrcpy <serial|IP:port> <screen|camera|camera-back> [name]
+phone_video_scrcpy <serial|IP:port> <screen|camera|camera-back> [name] [size] [fps] [bitrate_mbps] [codec]
 ```
 
 ## Usage
@@ -83,6 +83,8 @@ Each stream (audio / mic / screen / camera) can independently use **USB** or **W
 | `auto` | use USB when the phone is plugged in, otherwise WiFi (default) |
 | `wifi` | always wireless debugging (mDNS discovery) |
 | `usb` | always USB (`usb:<serial>`) |
+
+Delay / codec / bitrate are configured twice — one group for **WiFi** and one for **USB** — and each stream uses the group that matches its connection.
 
 ### Streaming into a specific PipeWire sink (optional)
 

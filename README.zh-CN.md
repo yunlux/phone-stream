@@ -45,7 +45,7 @@ phone_media_controller      # 打开控制窗
 
 ```bash
 phone_audio_scrcpy <序列号|IP:端口> [显示名] [缓冲ms] [flac|opus|aac] [码率bps] [output|playback|mic]
-phone_video_scrcpy <序列号|IP:端口> <screen|camera|camera-back> [显示名]
+phone_video_scrcpy <序列号|IP:端口> <screen|camera|camera-back> [显示名] [尺寸] [帧率] [码率Mbps] [编解码]
 ```
 
 ## 用法
@@ -83,6 +83,8 @@ phone_video_scrcpy <序列号|IP:端口> <screen|camera|camera-back> [显示名]
 | `auto` | 插着 USB 时优先用 USB，否则走 WiFi（默认） |
 | `wifi` | 始终用无线调试（mDNS 发现） |
 | `usb` | 始终用 USB（`usb:<序列号>`） |
+
+延迟 / 编解码 / 码率各配两套（**WiFi** 一组、**USB** 一组），实际按该路流的连接方式取用对应那组。
 
 ### 输出到指定 PipeWire 虚拟设备（可选）
 

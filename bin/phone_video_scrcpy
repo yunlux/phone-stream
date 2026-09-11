@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generic phone video streaming (screen mirror / camera).
-# Usage: phone_video_scrcpy <serial|IP:port|usb:serial> <screen|camera|camera-back> [name]
+# Usage: phone_video_scrcpy <serial|IP:port|usb:serial> <screen|camera|camera-back> [name] [size] [fps] [bitrate_mbps] [codec]
 #   serial    : auto-discover the device address via mDNS
 #   IP:port   : use directly (e.g. manually added devices)
 #   usb:serial: use a USB-connected device directly (no discovery/connect)
@@ -10,6 +10,10 @@ set -u
 TARGET="${1:-}"
 MODE="${2:-screen}"
 NAME="${3:-$TARGET}"
+SIZE="${4:-}"
+FPS="${5:-}"
+VBR="${6:-}"
+VCODEC="${7:-}"
 if [[ -z $TARGET ]]; then
     echo "Usage: phone_video_scrcpy <serial|IP:port> <screen|camera|camera-back> [name]"
     exit 1
@@ -95,15 +99,23 @@ if [[ -z $ADDR ]]; then
     exit 1
 fi
 
+VID_ARGS=()
 case "$MODE_KEY" in
-    screen) WINTITLE="$SAFE_NAME screen"; VID_ARGS=() ;;
+    screen) WINTITLE="$SAFE_NAME screen" ;;
     camera) WINTITLE="$SAFE_NAME camera"
-            VID_ARGS=(--video-source=camera --camera-facing=front --capture-orientation=0
-                      --camera-size=1280x720 --camera-fps=30) ;;
+            VID_ARGS+=(--video-source=camera --camera-facing=front --capture-orientation=0) ;;
     camera_back) WINTITLE="$SAFE_NAME back-camera"
-            VID_ARGS=(--video-source=camera --camera-facing=back --capture-orientation=0
-                      --camera-size=1280x720 --camera-fps=30) ;;
+            VID_ARGS+=(--video-source=camera --camera-facing=back --capture-orientation=0) ;;
 esac
+
+[[ -n $VCODEC ]] && VID_ARGS+=(--video-codec="$VCODEC")
+if [[ -n $VBR && $VBR != 0 ]]; then VID_ARGS+=(--video-bit-rate="${VBR}M"); fi
+if [[ -n $FPS && $FPS != 0 ]]; then
+    if [[ $MODE_KEY == screen ]]; then VID_ARGS+=(--max-fps="$FPS"); else VID_ARGS+=(--camera-fps="$FPS"); fi
+fi
+if [[ -n $SIZE && $SIZE != 0 ]]; then
+    if [[ $MODE_KEY == screen ]]; then VID_ARGS+=(--max-size="$SIZE"); else VID_ARGS+=(--camera-size="$SIZE"); fi
+fi
 
 LOG "video stream start: $WINTITLE ($ADDR)"
 while true; do

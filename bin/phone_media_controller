@@ -87,6 +87,17 @@ TEXTS = {
         "conn_mic": "Microphone",
         "conn_screen": "Screen",
         "conn_camera": "Camera",
+        "tab_general": "General",
+        "tab_audio": "Audio",
+        "tab_mic": "Microphone",
+        "tab_screen": "Screen",
+        "tab_camera": "Camera",
+        "size": "Size",
+        "fps": "FPS",
+        "vcodec": "Video codec",
+        "bitrate_kbps": "Bitrate (kbps)",
+        "bitrate_mbps": "Bitrate (Mbps)",
+        "size_hint": "Screen: long-edge px (0=native)  \u00b7  Camera: WxH (e.g. 1280x720)",
         "save": "Save",
         "cancel": "Cancel",
         "add_title": "Add device manually",
@@ -121,6 +132,17 @@ TEXTS = {
         "conn_mic": "\u9ea6\u514b\u98ce",
         "conn_screen": "\u5c4f\u5e55",
         "conn_camera": "\u76f8\u673a",
+        "tab_general": "\u901a\u7528",
+        "tab_audio": "\u97f3\u9891",
+        "tab_mic": "\u9ea6\u514b\u98ce",
+        "tab_screen": "\u5c4f\u5e55",
+        "tab_camera": "\u76f8\u673a",
+        "size": "\u5c3a\u5bf8",
+        "fps": "\u5e27\u7387",
+        "vcodec": "\u89c6\u9891\u7f16\u89e3\u7801",
+        "bitrate_kbps": "\u7801\u7387 (kbps)",
+        "bitrate_mbps": "\u7801\u7387 (Mbps)",
+        "size_hint": "\u5c4f\u5e55\uff1a\u957f\u8fb9\u50cf\u7d20 (0=\u539f\u751f)  \u00b7  \u76f8\u673a\uff1aWxH\uff08\u5982 1280x720\uff09",
         "save": "\u4fdd\u5b58",
         "cancel": "\u53d6\u6d88",
         "add_title": "\u624b\u52a8\u6dfb\u52a0\u8bbe\u5907",
@@ -226,15 +248,94 @@ def conn_choice(dev, kind):
     return (dev.get("conn") or {}).get(kind) or "auto"
 
 
+def use_usb(dev, kind):
+    if dev.get("manual"):
+        return False
+    ser = dev.get("serial") or ""
+    if not ser or ":" in ser:
+        return False
+    c = conn_choice(dev, kind)
+    return c == "usb" or (c == "auto" and usb_ok(dev))
+
+
 def script_target(dev, kind):
     # USB mode -> "usb:<serial>"; otherwise the usual serial / IP:port target.
-    if not dev.get("manual"):
-        ser = dev.get("serial") or ""
-        if ser and ":" not in ser:
-            c = conn_choice(dev, kind)
-            if c == "usb" or (c == "auto" and usb_ok(dev)):
-                return "usb:" + ser
+    if use_usb(dev, kind):
+        return "usb:" + dev["serial"]
     return stream_target(dev)
+
+
+PARAM_DEFAULTS = {
+    "audio":  {"buffer": "200", "codec": "flac", "bitrate": "256"},
+    "mic":    {"buffer": "200", "codec": "flac", "bitrate": "256"},
+    "screen": {"size": "0", "fps": "0", "bitrate": "8", "codec": "h264"},
+    "camera": {"size": "1280x720", "fps": "30", "bitrate": "8", "codec": "h264"},
+}
+PARAM_KEYS = {
+    "audio":  ("buffer", "codec", "bitrate"),
+    "mic":    ("buffer", "codec", "bitrate"),
+    "screen": ("size", "fps", "bitrate", "codec"),
+    "camera": ("size", "fps", "bitrate", "codec"),
+}
+
+
+def migrate_params(dev):
+    # one-time: build dev["params"] = {kind: {wifi:{...}, usb:{...}}} from old flat keys.
+    if isinstance(dev.get("params"), dict):
+        return
+    p = {}
+    for kind in PARAM_KEYS:
+        p[kind] = {t: dict(PARAM_DEFAULTS[kind]) for t in ("wifi", "usb")}
+    for t, pre in (("wifi", ""), ("usb", "usb_")):
+        a = p["audio"][t]
+        if (pre + "buffer") in dev:
+            a["buffer"] = str(dev[pre + "buffer"])
+        if (pre + "codec") in dev:
+            a["codec"] = str(dev[pre + "codec"])
+        if (pre + "bitrate") in dev:
+            try:
+                a["bitrate"] = str(int(int(dev[pre + "bitrate"]) / 1000))
+            except Exception:
+                pass
+    dev["params"] = p
+
+
+def get_params(dev, kind):
+    # (wifi_dict, usb_dict) merged with defaults.
+    migrate_params(dev)
+    p = (dev.get("params") or {}).get(kind) or {}
+    out = []
+    for t in ("wifi", "usb"):
+        d = dict(PARAM_DEFAULTS[kind])
+        d.update(p.get(t) or {})
+        out.append(d)
+    return out[0], out[1]
+
+
+def active_params(dev, kind):
+    wi, us = get_params(dev, kind)
+    return us if use_usb(dev, kind) else wi
+
+
+def media_params(dev, kind):
+    # (buffer_ms, codec, bitrate_bps) for the transport in use.
+    p = active_params(dev, kind)
+    try:
+        br = int(float(p.get("bitrate", 256)) * 1000)
+    except Exception:
+        br = 256000
+    try:
+        buf = int(float(p.get("buffer", 200)))
+    except Exception:
+        buf = 200
+    return buf, p.get("codec", "flac"), br
+
+
+def video_params(dev, mode):
+    # (size, fps, bitrate_mbps, codec) for the transport in use.
+    kind = "screen" if mode == "screen" else "camera"
+    p = active_params(dev, kind)
+    return str(p.get("size", "0")), str(p.get("fps", "0")), str(p.get("bitrate", "8")), p.get("codec", "h264")
 
 
 def _pid_file(dev):
@@ -287,9 +388,9 @@ def start_stream(dev):
     if dev_connected(dev) or not os.path.exists(STREAM_SCRIPT):
         return
     try:
+        buf, codec, br = media_params(dev, "audio")
         subprocess.Popen(["setsid", STREAM_SCRIPT, script_target(dev, "audio"),
-                          node_base(dev) + " audio", str(dev.get("buffer", 200)),
-                          str(dev.get("codec", "flac")), str(dev.get("bitrate", "")),
+                          node_base(dev) + " audio", str(buf), codec, str(br),
                           str(dev.get("source", "output"))],
                          start_new_session=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -351,10 +452,10 @@ def start_mic(dev):
     if mic_running(dev) or not os.path.exists(STREAM_SCRIPT):
         return
     try:
+        buf, codec, br = media_params(dev, "mic")
         subprocess.Popen(["setsid", STREAM_SCRIPT, script_target(dev, "mic"),
                           node_base(dev) + " mic",
-                          str(dev.get("buffer", 200)), str(dev.get("codec", "flac")),
-                          str(dev.get("bitrate", "")), "mic", "_mic"],
+                          str(buf), codec, str(br), "mic", "_mic"],
                          start_new_session=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
@@ -394,8 +495,11 @@ def start_video(dev, mode):
     if video_running(dev, mode) or not os.path.exists(VIDEO_SCRIPT):
         return
     try:
-        subprocess.Popen(["setsid", VIDEO_SCRIPT, script_target(dev, "screen" if mode == "screen" else "camera"),
-                          mode, dev.get("name", "")], start_new_session=True,
+        kind = "screen" if mode == "screen" else "camera"
+        size, fps, br, codec = video_params(dev, mode)
+        subprocess.Popen(["setsid", VIDEO_SCRIPT, script_target(dev, kind),
+                          mode, dev.get("name", ""), size, fps, br, codec],
+                         start_new_session=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
     except Exception:
@@ -959,76 +1063,124 @@ class App:
         win = tk.Toplevel(self.root)
         win.title(t("settings_title").format(name=dev.get("name", "")))
         win.configure(bg=BG)
-        win.geometry("470x560")
+        win.geometry("620x440")
         win.transient(self.root)
         win.grab_set()
 
         name_var = tk.StringVar(value=dev.get("name", ""))
-        buffer_var = tk.StringVar(value=str(dev.get("buffer", 200)))
-        c = dev.get("codec", "flac")
-        codec_var = tk.StringVar(value=t("codec_flac") if c == "flac" else c)
-        try:
-            br = str(int(int(dev.get("bitrate", 256000)) / 1000))
-        except Exception:
-            br = "256"
-        bitrate_var = tk.StringVar(value=br)
         source_var = tk.StringVar(value=dev.get("source", "output"))
+        vars = {}  # vars[kind][transport][key] = StringVar
 
-        def row(r, label):
-            tk.Label(win, text=label, bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
-                row=r, column=0, sticky="w", padx=12, pady=8)
+        nb = ttk.Notebook(win)
+        nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 2))
 
-        row(0, t("name"))
-        tk.Entry(win, textvariable=name_var, width=24).grid(row=0, column=1, sticky="w")
-        row(1, t("delay"))
-        tk.Spinbox(win, from_=0, to=2000, increment=10, textvariable=buffer_var,
-                   width=10).grid(row=1, column=1, sticky="w")
-        row(2, t("codec"))
-        ttk.Combobox(win, values=[t("codec_flac"), "opus", "aac"], textvariable=codec_var,
-                     state="readonly", width=14).grid(row=2, column=1, sticky="w")
-        row(3, t("bitrate"))
-        ttk.Combobox(win, values=["96", "128", "192", "256", "320", "510"],
-                     textvariable=bitrate_var, width=14).grid(row=3, column=1, sticky="w")
-        tk.Label(win, text=t("bitrate_hint"), bg=BG, fg="#6c7086",
-                 font=(DEF_FONT, 8)).grid(row=4, column=1, sticky="w")
-        row(5, t("source"))
-        ttk.Combobox(win, values=["output", "playback", "mic"], textvariable=source_var,
-                     state="readonly", width=14).grid(row=5, column=1, sticky="w")
-        tk.Label(win, text=t("source_hint"), bg=BG, fg="#6c7086",
-                 font=(DEF_FONT, 8)).grid(row=6, column=1, sticky="w")
+        # General tab
+        gen = tk.Frame(nb, bg=BG)
+        nb.add(gen, text=t("tab_general"))
+        tk.Label(gen, text=t("name"), bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
+            row=0, column=0, sticky="w", padx=14, pady=10)
+        tk.Entry(gen, textvariable=name_var, width=26).grid(row=0, column=1, sticky="w")
+        tk.Label(gen, text=t("source"), bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
+            row=1, column=0, sticky="w", padx=14, pady=10)
+        ttk.Combobox(gen, values=["output", "playback", "mic"], textvariable=source_var,
+                     state="readonly", width=16).grid(row=1, column=1, sticky="w")
+        tk.Label(gen, text=t("source_hint"), bg=BG, fg="#6c7086",
+                 font=(DEF_FONT, 8)).grid(row=2, column=1, sticky="w")
 
-        row(7, t("connection"))
-        tk.Label(win, text=t("conn_hint"), bg=BG, fg="#6c7086",
-                 font=(DEF_FONT, 8)).grid(row=7, column=1, sticky="w")
-        conn_vars = {}
-        for i, kind in enumerate(CONN_KINDS):
-            row(8 + i, "  " + t("conn_" + kind))
-            v = tk.StringVar(value=conn_choice(dev, kind))
-            conn_vars[kind] = v
-            ttk.Combobox(win, values=["auto", "wifi", "usb"], textvariable=v,
-                         state="readonly", width=14).grid(row=8 + i, column=1, sticky="w")
+        def label_for(kind, key):
+            if key == "codec":
+                return t("vcodec") if kind in ("screen", "camera") else t("codec")
+            if key == "bitrate":
+                return t("bitrate_mbps") if kind in ("screen", "camera") else t("bitrate_kbps")
+            return {"buffer": t("delay"), "size": t("size"), "fps": t("fps")}.get(key, key)
+
+        def make_widget(box, kind, key, var):
+            if key == "buffer":
+                return tk.Spinbox(box, from_=0, to=2000, increment=10, textvariable=var, width=9)
+            if key == "fps":
+                return tk.Spinbox(box, from_=0, to=120, increment=1, textvariable=var, width=9)
+            if key == "codec":
+                vals = ["flac", "opus", "aac"] if kind in ("audio", "mic") else ["h264", "h265", "av1"]
+                return ttk.Combobox(box, values=vals, textvariable=var, state="readonly", width=8)
+            if key == "bitrate":
+                vals = ["96", "128", "192", "256", "320", "510"] if kind in ("audio", "mic") \
+                    else ["2", "4", "6", "8", "12", "20", "30"]
+                return ttk.Combobox(box, values=vals, textvariable=var, state="readonly", width=8)
+            return tk.Entry(box, textvariable=var, width=11)
+
+        def ptab(kind):
+            fr = tk.Frame(nb, bg=BG)
+            nb.add(fr, text=t("tab_" + kind))
+            vars[kind] = {}
+            wi, us = get_params(dev, kind)
+            for col, (tr_name, src) in enumerate((("WiFi", wi), ("USB", us))):
+                box = tk.Frame(fr, bg=BG)
+                box.grid(row=0, column=col, sticky="n", padx=22, pady=14)
+                tk.Label(box, text=tr_name, bg=BG, fg="#89b4fa",
+                         font=(DEF_FONT, 10, "bold")).grid(row=0, column=0, columnspan=2,
+                                                           sticky="w", pady=(0, 6))
+                vars[kind][tr_name.lower()] = {}
+                for i, key in enumerate(PARAM_KEYS[kind]):
+                    tk.Label(box, text=label_for(kind, key), bg=BG, fg=FG,
+                             font=(DEF_FONT, 9)).grid(row=1 + i, column=0, sticky="w", pady=4)
+                    v = tk.StringVar(value=str(src.get(key, "")))
+                    make_widget(box, kind, key, v).grid(row=1 + i, column=1, sticky="w", padx=8)
+                    vars[kind][tr_name.lower()][key] = v
+            if kind in ("screen", "camera"):
+                tk.Label(fr, text=t("size_hint"), bg=BG, fg="#6c7086",
+                         font=(DEF_FONT, 8)).grid(row=1, column=0, columnspan=2, sticky="w", padx=22)
+            return fr
+
+        def ctab():
+            fr = tk.Frame(nb, bg=BG)
+            nb.add(fr, text=t("connection"))
+            tk.Label(fr, text=t("conn_hint"), bg=BG, fg="#6c7086",
+                     font=(DEF_FONT, 8)).grid(row=0, column=0, columnspan=2, sticky="w",
+                                              padx=14, pady=(14, 6))
+            cv = {}
+            for i, kind in enumerate(CONN_KINDS):
+                tk.Label(fr, text=t("conn_" + kind), bg=BG, fg=FG,
+                         font=(DEF_FONT, 10)).grid(row=1 + i, column=0, sticky="w", padx=14, pady=8)
+                v = tk.StringVar(value=conn_choice(dev, kind))
+                cv[kind] = v
+                ttk.Combobox(fr, values=["auto", "wifi", "usb"], textvariable=v,
+                             state="readonly", width=14).grid(row=1 + i, column=1, sticky="w")
+            return cv
+
+        ptab("audio")
+        ptab("mic")
+        ptab("screen")
+        ptab("camera")
+        conn_vars = ctab()
 
         def save():
             nm = name_var.get().strip()
             if nm:
                 dev["name"] = nm
-            try:
-                dev["buffer"] = int(float(buffer_var.get()))
-            except Exception:
-                pass
-            dev["codec"] = codec_var.get().split()[0]
-            try:
-                dev["bitrate"] = int(float(bitrate_var.get()) * 1000)
-            except Exception:
-                pass
             dev["source"] = source_var.get()
+            p = dev.get("params")
+            if not isinstance(p, dict):
+                p = {}
+                dev["params"] = p
+            for kind in PARAM_KEYS:
+                pk = p.get(kind)
+                if not isinstance(pk, dict):
+                    pk = {}
+                    p[kind] = pk
+                for tr in ("wifi", "usb"):
+                    td = pk.get(tr)
+                    if not isinstance(td, dict):
+                        td = {}
+                        pk[tr] = td
+                    for key in PARAM_KEYS[kind]:
+                        td[key] = vars[kind][tr][key].get().strip()
             dev["conn"] = {k: v.get() for k, v in conn_vars.items()}
             save_config(self.devices)
             self._sync_cards()
             win.destroy()
 
         btns = tk.Frame(win, bg=BG)
-        btns.grid(row=12, column=0, columnspan=2, pady=16)
+        btns.pack(pady=10)
         tk.Button(btns, text=t("save"), width=10, command=save).pack(side=tk.LEFT, padx=6)
         tk.Button(btns, text=t("cancel"), width=10, command=win.destroy).pack(side=tk.LEFT, padx=6)
 

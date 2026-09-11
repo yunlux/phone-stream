@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.7 (2026-09-11)
+
+### Changed
+- Settings dialog is now **tabbed** (General / Audio / Microphone / Screen / Camera / Connection) instead of one long page
+- Every stream has its own parameters in two columns — **WiFi** and **USB** — and uses the group matching its connection:
+  - audio / mic: delay, codec, bitrate
+  - screen / camera: size, fps, bitrate, video codec
+
+### Added
+- `phone_video_scrcpy` accepts optional `size`, `fps`, `bitrate (Mbps)`, `codec`
+
 ## v0.2.6 (2026-09-11)
 
 ### Added
