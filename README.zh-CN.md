@@ -9,7 +9,7 @@ Linux 桌面端小工具：通过 USB / 无线 ADB 把 **Android 手机的声音
 - **纯命令行也可用**：脚本可独立运行
 
 > 文档默认英文，中文见本文件（English: [README.md](README.md)）。
-> 界面默认英文，设 `PHONE_STREAM_LANG=zh` 切中文。
+> 界面默认英文，顶栏的 **中文 / EN** 按钮可随时切换（会记住到 `settings.json`）；也可用 `PHONE_STREAM_LANG=zh`。
 
 ---
 
@@ -87,6 +87,7 @@ phone_media_controller
 | 路径 | 说明 |
 | --- | --- |
 | `~/.config/phone-stream/stream_devices.json` | 设备列表与每设备设置 |
+| `~/.config/phone-stream/settings.json` | 已保存的界面语言（由顶栏按钮写入） |
 | `~/.config/phone-stream/stream_<id>.{pid,addr,lock}` | 各流的运行时状态 |
 | `PHONE_STREAM_HOME` | 覆盖配置目录 |
 | `PHONE_STREAM_LANG` | 界面语言（默认 `en`，可选 `zh`） |

@@ -9,7 +9,7 @@ A small Linux desktop tool: stream an **Android phone's audio, microphone, camer
 - **Also usable from the CLI**: the scripts work standalone
 
 > Language: this document is English by default; see [README.zh-CN.md](README.zh-CN.md) for Chinese.
-> The GUI defaults to English; set `PHONE_STREAM_LANG=zh` for Chinese.
+> The GUI defaults to English but can be switched at any time with the **中文 / EN** button in the top bar (remembered in `settings.json`); `PHONE_STREAM_LANG=zh` also works.
 
 ---
 
@@ -88,6 +88,7 @@ phone_media_controller
 | Path | Description |
 | --- | --- |
 | `~/.config/phone-stream/stream_devices.json` | device list and per-device settings |
+| `~/.config/phone-stream/settings.json` | saved UI language (set by the top-bar button) |
 | `~/.config/phone-stream/stream_<id>.{pid,addr,lock}` | per-stream runtime state |
 | `PHONE_STREAM_HOME` | override the config directory |
 | `PHONE_STREAM_LANG` | UI language (`en` default, `zh` optional) |

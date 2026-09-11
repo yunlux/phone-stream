@@ -24,10 +24,40 @@ VIDEO_SCRIPT = os.path.join(_HERE, "phone_video_scrcpy")
 POLL_MS = 1500
 SCAN_MS = 6000
 
-# UI language: English by default, Chinese via PHONE_STREAM_LANG=zh
-LANG = (os.environ.get("PHONE_STREAM_LANG") or "en").strip().lower()
-if LANG not in ("en", "zh"):
-    LANG = "en"
+# UI language: English by default, Chinese via PHONE_STREAM_LANG=zh or the in-app button.
+SETTINGS = os.path.join(CONF_DIR, "settings.json")
+
+
+def load_lang():
+    # A saved in-app choice wins; otherwise PHONE_STREAM_LANG; otherwise English.
+    try:
+        with open(SETTINGS) as fh:
+            saved = (json.load(fh).get("lang") or "").strip().lower()
+            if saved in ("en", "zh"):
+                return saved
+    except Exception:
+        pass
+    env = (os.environ.get("PHONE_STREAM_LANG") or "").strip().lower()
+    return env if env in ("en", "zh") else "en"
+
+
+def save_lang(value):
+    try:
+        os.makedirs(CONF_DIR, exist_ok=True)
+        data = {}
+        if os.path.exists(SETTINGS):
+            try:
+                data = json.load(open(SETTINGS)) or {}
+            except Exception:
+                data = {}
+        data["lang"] = value
+        with open(SETTINGS, "w") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+LANG = load_lang()
 
 TEXTS = {
     "en": {
@@ -603,6 +633,23 @@ class App:
         th.join(timeout=6)
         self.root.destroy()
 
+    def toggle_lang(self):
+        # Switch UI language, persist it, and rebuild the whole window.
+        global LANG
+        LANG = "en" if LANG == "zh" else "zh"
+        save_lang(LANG)
+        self._relang()
+
+    def _relang(self):
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.cards = {}
+        self.placeholder = None
+        self.root.title(t("app_title"))
+        self._build()
+        self._sync_cards()
+        self.root.after(30, self.refresh)
+
     def _build(self):
         top = tk.Frame(self.root, bg=BG)
         top.pack(fill=tk.X, padx=14, pady=(12, 6))
@@ -610,6 +657,8 @@ class App:
                  font=(DEF_FONT, 14, "bold")).pack(side=tk.LEFT)
         tk.Button(top, text=t("add"), command=self.add_manual).pack(side=tk.RIGHT)
         tk.Button(top, text=t("scan"), command=self.force_scan).pack(side=tk.RIGHT, padx=4)
+        tk.Button(top, text=("EN" if LANG == "zh" else "中文"),
+                  command=self.toggle_lang).pack(side=tk.RIGHT, padx=4)
         self.card_box = tk.Frame(self.root, bg=BG)
         self.card_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
         self.placeholder = None

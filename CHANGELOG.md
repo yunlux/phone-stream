@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.2 (2026-09-11)
+
+### Added
+- In-app language switch: a **中文 / EN** button in the top bar; the choice is saved to `settings.json` and remembered next launch
+
+### Changed
+- Language resolution order: saved setting > `PHONE_STREAM_LANG` > English
+
 ## v0.2.1 (2026-09-11)
 
 ### Changed
