@@ -1,5 +1,7 @@
 # 手机串流 (Phone Stream)
 
+[English](README.md) | **简体中文**
+
 Linux 桌面端小工具：通过 USB / 无线 ADB 把 **Android 手机的声音、麦克风、相机、屏幕**串流到电脑，并提供**卡片式图形控制窗**。
 
 - **自动发现**：mDNS 扫描无线调试设备，自动记住设备（换 IP/端口也能连）
@@ -8,7 +10,6 @@ Linux 桌面端小工具：通过 USB / 无线 ADB 把 **Android 手机的声音
 - **一键切换**：麦克风 / 相机 / 屏幕 各自独立开关，可与声音流同时使用
 - **纯命令行也可用**：脚本可独立运行
 
-> 文档默认英文，中文见本文件（English: [README.md](README.md)）。
 > 界面默认英文，顶栏的 **中文 / EN** 按钮可随时切换（会记住到 `settings.json`）；也可用 `PHONE_STREAM_LANG=zh`。
 
 ---

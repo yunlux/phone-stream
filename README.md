@@ -1,5 +1,7 @@
 # Phone Stream
 
+**English** | [简体中文](README.zh-CN.md)
+
 A small Linux desktop tool: stream an **Android phone's audio, microphone, camera and screen** to your computer over USB / wireless ADB, with a **card-based GUI controller**.
 
 - **Auto-discovery**: mDNS scan for wireless-debug devices; remembers devices (survives IP/port changes)
@@ -8,7 +10,6 @@ A small Linux desktop tool: stream an **Android phone's audio, microphone, camer
 - **One-click toggles**: microphone / camera / screen, each independent and can run alongside the audio stream
 - **Also usable from the CLI**: the scripts work standalone
 
-> Language: this document is English by default; see [README.zh-CN.md](README.zh-CN.md) for Chinese.
 > The GUI defaults to English but can be switched at any time with the **中文 / EN** button in the top bar (remembered in `settings.json`); `PHONE_STREAM_LANG=zh` also works.
 
 ---
