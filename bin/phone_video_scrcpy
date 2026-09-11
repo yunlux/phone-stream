@@ -1,14 +1,14 @@
 #!/bin/bash
-# 通用手机视频串流（屏幕镜像 / 相机）
-# 用法: phone_video_scrcpy <序列号|IP:端口> <screen|camera|camera-back> [显示名]
-# 特性: 单实例(按设备+模式)、断线自动重连、显示窗口、不转发音频
+# Generic phone video streaming (screen mirror / camera).
+# Usage: phone_video_scrcpy <serial|IP:port> <screen|camera|camera-back> [name]
+# Features: one instance per device+mode, auto-reconnect, shows a window, no audio.
 set -u
 
 TARGET="${1:-}"
 MODE="${2:-screen}"
 NAME="${3:-$TARGET}"
 if [[ -z $TARGET ]]; then
-    echo "用法: phone_video_scrcpy <序列号|IP:端口> <screen|camera|camera-back> [显示名]"
+    echo "Usage: phone_video_scrcpy <serial|IP:port> <screen|camera|camera-back> [name]"
     exit 1
 fi
 
@@ -16,7 +16,7 @@ case "$MODE" in
     screen) MODE_KEY="screen" ;;
     camera|camera-front|camera_front) MODE_KEY="camera" ;;
     camera-back|camera_back) MODE_KEY="camera_back" ;;
-    *) echo "未知模式: $MODE"; exit 1 ;;
+    *) echo "unknown mode: $MODE"; exit 1 ;;
 esac
 
 WAIT_TIMEOUT=120
@@ -36,7 +36,7 @@ CACHE_FILE="$CACHE_DIR/stream_$ID.addr"
 PID_FILE="$CACHE_DIR/stream_$ID.pid"
 
 exec 9>"$CACHE_DIR/stream_$ID.lock"
-flock -n 9 || { echo "已在串流: $NAME $MODE"; exit 0; }
+flock -n 9 || { echo "already streaming: $NAME $MODE"; exit 0; }
 
 echo $$ > "$PID_FILE"
 cleanup() { kill 0 2>/dev/null; rm -f "$PID_FILE"; exit 0; }
@@ -49,6 +49,7 @@ save_addr() { printf '%s' "$1" > "$CACHE_FILE"; }
 load_addr() { [[ -r $CACHE_FILE ]] && head -1 "$CACHE_FILE" || true; }
 
 discover() {
+    # Collect candidates by serial, TCP-probe each and return the live one.
     local line addr first=""
     while IFS= read -r line; do
         addr=$(awk -F';' '{print $8":"$9}' <<<"$line")
@@ -83,21 +84,21 @@ resolve_addr() {
 
 ADDR=$(resolve_addr)
 if [[ -z $ADDR ]]; then
-    LOG "未找到设备: $TARGET"
+    LOG "device not found: $TARGET"
     exit 1
 fi
 
 case "$MODE_KEY" in
-    screen) WINTITLE="$SAFE_NAME 屏幕"; VID_ARGS=() ;;
-    camera) WINTITLE="$SAFE_NAME 相机"
+    screen) WINTITLE="$SAFE_NAME screen"; VID_ARGS=() ;;
+    camera) WINTITLE="$SAFE_NAME camera"
             VID_ARGS=(--video-source=camera --camera-facing=front --capture-orientation=0
                       --camera-size=1280x720 --camera-fps=30) ;;
-    camera_back) WINTITLE="$SAFE_NAME 后置相机"
+    camera_back) WINTITLE="$SAFE_NAME back-camera"
             VID_ARGS=(--video-source=camera --camera-facing=back --capture-orientation=0
                       --camera-size=1280x720 --camera-fps=30) ;;
 esac
 
-LOG "视频串流启动: $WINTITLE ($ADDR)"
+LOG "video stream start: $WINTITLE ($ADDR)"
 while true; do
     adb connect "$ADDR" >/dev/null 2>&1
     waited=0
@@ -111,7 +112,7 @@ while true; do
         adb connect "$ADDR" >/dev/null 2>&1
         [[ $(dev_state "$ADDR") == device ]] && break
         if ((waited >= WAIT_TIMEOUT)); then
-            LOG "连接超时: $ADDR"
+            LOG "connect timeout: $ADDR"
             exit 1
         fi
     done
@@ -120,15 +121,15 @@ while true; do
     scrcpy --window-title="$WINTITLE" -s "$ADDR" --no-audio "${VID_ARGS[@]}"
     rc=$?
     if ((rc == 0 || rc == 130)); then
-        LOG "已退出"
+        LOG "exited"
         exit 0
     fi
-    LOG "连接中断(rc=${rc})，尝试重连..."
+    LOG "connection lost (rc=${rc}), reconnecting..."
     rm -f "$CACHE_FILE" 2>/dev/null
     sleep 3
     ADDR=$(resolve_addr)
     if [[ -z $ADDR ]]; then
-        LOG "设备丢失: $TARGET"
+        LOG "device lost: $TARGET"
         exit 1
     fi
 done

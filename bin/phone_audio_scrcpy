@@ -1,9 +1,9 @@
 #!/bin/bash
-# 通用手机声音串流 （可选输出到指定 PipeWire sink）
-# 用法: phone_audio_scrcpy <序列号|IP:端口> [显示名]
-#   序列号: 通过 mDNS 自动发现该设备的实时 IP:端口（手机换 IP/端口也能连）
-#   IP:端口: 直接使用（手动添加的设备）
-# 特性: 单实例(按设备)、断线自动重连、FLAC 无损、无窗口(纯后台)
+# Generic phone audio streaming to a PipeWire sink.
+# Usage: phone_audio_scrcpy <serial|IP:port> [name] [buffer_ms] [flac|opus|aac] [bitrate] [output|playback|mic] [id-suffix]
+#   serial  : auto-discover the device address via mDNS (survives IP/port changes)
+#   IP:port : use directly (e.g. manually added devices)
+# Features: one instance per device, auto-reconnect, no window (background only).
 set -u
 
 TARGET="${1:-}"
@@ -14,7 +14,7 @@ BITRATE="${5:-}"
 SOURCE="${6:-output}"
 SUFFIX="${7:-}"
 if [[ -z $TARGET ]]; then
-    echo "用法: phone_audio_scrcpy <序列号|IP:端口> [显示名] [缓冲ms] [flac|opus|aac] [码率bps] [output|playback|mic] [流后缀]"
+    echo "Usage: phone_audio_scrcpy <serial|IP:port> [name] [buffer_ms] [flac|opus|aac] [bitrate] [output|playback|mic] [id-suffix]"
     exit 1
 fi
 
@@ -35,7 +35,7 @@ CACHE_FILE="$CACHE_DIR/stream_$ID.addr"
 PID_FILE="$CACHE_DIR/stream_$ID.pid"
 
 exec 9>"$CACHE_DIR/stream_$ID.lock"
-flock -n 9 || { echo "已在串流: $NAME"; exit 0; }
+flock -n 9 || { echo "already streaming: $NAME"; exit 0; }
 
 echo $$ > "$PID_FILE"
 cleanup() { kill 0 2>/dev/null; rm -f "$PID_FILE"; exit 0; }
@@ -48,7 +48,7 @@ save_addr() { printf '%s' "$1" > "$CACHE_FILE"; }
 load_addr() { [[ -r $CACHE_FILE ]] && head -1 "$CACHE_FILE" || true; }
 
 discover() {
-    # 按序列号收集候选（mDNS 可能残留旧记录），逐个 TCP 探测取在听的
+    # Collect candidates by serial (mDNS may keep stale records), TCP-probe each and return the live one.
     local line addr first=""
     while IFS= read -r line; do
         addr=$(awk -F';' '{print $8":"$9}' <<<"$line")
@@ -83,11 +83,11 @@ resolve_addr() {
 
 ADDR=$(resolve_addr)
 if [[ -z $ADDR ]]; then
-    LOG "未找到设备: $TARGET"
+    LOG "device not found: $TARGET"
     exit 1
 fi
 
-LOG "串流启动: $NAME ($ADDR)"
+LOG "stream start: $NAME ($ADDR)"
 while true; do
     adb connect "$ADDR" >/dev/null 2>&1
     waited=0
@@ -101,7 +101,7 @@ while true; do
         adb connect "$ADDR" >/dev/null 2>&1
         [[ $(dev_state "$ADDR") == device ]] && break
         if ((waited >= WAIT_TIMEOUT )); then
-            LOG "连接超时: $ADDR"
+            LOG "connect timeout: $ADDR"
             exit 1
         fi
     done
@@ -118,15 +118,15 @@ while true; do
     "${ENVP[@]}" scrcpy --window-title="$SAFE_NAME" -s "$ADDR" --no-video --no-window "${AUDIO_ARGS[@]}"
     rc=$?
     if ((rc == 0 || rc == 130)); then
-        LOG "已退出"
+        LOG "exited"
         exit 0
     fi
-    LOG "连接中断(rc=${rc})，尝试重连..."
+    LOG "connection lost (rc=${rc}), reconnecting..."
     rm -f "$CACHE_FILE" 2>/dev/null
     sleep 3
     ADDR=$(resolve_addr)
     if [[ -z $ADDR ]]; then
-        LOG "设备丢失: $TARGET"
+        LOG "device lost: $TARGET"
         exit 1
     fi
 done

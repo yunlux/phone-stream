@@ -1,26 +1,37 @@
-# 更新日志
+# Changelog
+
+## v0.2.1 (2026-09-11)
+
+### Changed
+- UI text defaults to English; set `PHONE_STREAM_LANG=zh` for Chinese
+- All code comments translated to English
+- Docs: English default with Chinese versions (`README.zh-CN.md`, `CHANGELOG.zh-CN.md`)
+
+### Fixed
+- Restored the volume +/- buttons (they use relative volume keys, which work where `volume --set` does not)
+- Volume slider uses relative volume keys by delta
+- Poll anti-overlap to stop the card flickering while a video is paused
 
 ## v0.2.0 (2026-09-11)
 
-### 新增
-- 卡片式界面：每台设备一张卡片（设备信息 + 媒体信息 + 播放控制 + 设置）
-- 麦克风 / 相机 / 屏幕 切换按钮（各自独立流，可与音频流共存）
-- 设置项：**名称**、延迟、编解码、码率、音频源
-- **音量滑条**（按差值发送音量键）
-- **MCP 兜底**：无 MediaSession 的应用（如小红书）用手机端 MCP 无障碍读屏取标题/作者；MCP 连不上时卡片小字显示 `MCP 断开`
-- 关闭程序时自动断开所有连接（音频 / 麦克风 / 相机 / 屏幕）
-- `sync-from-live.sh`：把实机脚本同步进仓库并自动通用化
+### Added
+- Card-based UI: one card per device (device info + media info + playback controls + settings)
+- Microphone / camera / screen toggle buttons (independent streams, coexisting with audio)
+- Settings: name, delay, codec, bitrate, audio source
+- Volume slider
+- MCP fallback: for apps without a MediaSession (e.g. Xiaohongshu), read the on-screen title/artist via the phone-side MCP accessibility service; shows `MCP offline` when unreachable
+- Disconnect everything (audio / mic / camera / screen) when the program closes
+- `sync-from-live.sh`: sync the deployed scripts into this repo with automatic de-sensitization
 
-### 变更
-- 「连接 / 断开」合并为单个切换键
-- 卡片右侧按钮优先占位，窗口缩小时不再被裁切
-- 播放控制按钮缩小并与音量滑条排在同一行
+### Changed
+- Merged Connect / Disconnect into a single toggle button
+- Card buttons keep priority so they are not clipped when the window shrinks
+- Smaller playback buttons, volume slider moved onto the same row
 
-### 修复
-- 设备地址优先使用扫描得到的实时地址（避免流缓存过期导致读不到媒体）
-- 过滤 KDE Connect 的镜像会话（不再把 PC 端媒体误显示为手机媒体）
-- 轮询防叠加，修复视频暂停时卡片异常闪动
+### Fixed
+- Prefer the live scanned address for a device (stale stream cache caused missing media)
+- Filter out KDE Connect mirrored sessions (PC media was shown as phone media)
 
 ## v0.1.0
 
-- 初始版本：mDNS 自动发现 / 手动添加设备、声音串流控制窗、通用 `phone_audio_scrcpy` / `phone_video_scrcpy`
+- Initial release: mDNS auto-discovery / manual add, audio streaming controller window, generic `phone_audio_scrcpy` / `phone_video_scrcpy`
