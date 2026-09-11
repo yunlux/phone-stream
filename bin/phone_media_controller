@@ -81,6 +81,7 @@ TEXTS = {
         "bitrate_hint": "(ignored for lossless FLAC)",
         "source": "Audio source",
         "source_hint": "(output / playback / mic)",
+        "pc_gain": "PC Gain",
         "connection": "Connection (ADB)",
         "conn_hint": "auto = USB when plugged in",
         "conn_audio": "Audio",
@@ -126,6 +127,7 @@ TEXTS = {
         "bitrate_hint": "(flac \u65e0\u635f\u65f6\u7801\u7387\u65e0\u6548)",
         "source": "\u97f3\u9891\u6e90",
         "source_hint": "(output=\u8f93\u51fa / playback=\u64ad\u653e / mic=\u9ea6\u514b\u98ce)",
+        "pc_gain": "\u7535\u8111\u589e\u76ca",
         "connection": "\u8fde\u63a5\u65b9\u5f0f (ADB)",
         "conn_hint": "auto=\u63d2 USB \u65f6\u4f18\u5148\u7528 USB",
         "conn_audio": "\u58f0\u97f3",
@@ -194,6 +196,48 @@ CARD = "#2a2a3c"
 FG = "#cdd6f4"
 SUB = "#a6adc8"
 DEF_FONT = "Source Han Serif CN"
+
+CHIP_OFF = "#3a3d52"
+CHIP_OFF_FG = "#b9bfda"
+CHIP_HI = "#4a4e68"
+CHIP_ON_FG = "#11111b"
+ACC_MIC = "#a6e3a1"
+ACC_CAM = "#89b4fa"
+ACC_SCR = "#fab387"
+
+
+def chip_style(on, color):
+    if on:
+        return {"bg": color, "fg": CHIP_ON_FG, "activebackground": color,
+                "activeforeground": CHIP_ON_FG}
+    return {"bg": CHIP_OFF, "fg": CHIP_OFF_FG, "activebackground": CHIP_HI,
+            "activeforeground": "#ffffff"}
+
+
+def apply_style(root):
+    # Dark ttk theme so comboboxes / scales / notebook / labelframe match the UI.
+    root.option_add("*TCombobox*Listbox.background", CARD)
+    root.option_add("*TCombobox*Listbox.foreground", FG)
+    root.option_add("*TCombobox*Listbox.selectBackground", "#89b4fa")
+    root.option_add("*TCombobox*Listbox.selectForeground", "#11111b")
+    st = ttk.Style(root)
+    try:
+        st.theme_use("clam")
+    except Exception:
+        return
+    st.configure(".", background=BG, foreground=FG, fieldbackground=CARD,
+                 bordercolor="#45475a", lightcolor=CARD, darkcolor=CARD)
+    st.configure("TNotebook", background=BG, bordercolor="#45475a", tabmargins=(6, 4, 0, 0))
+    st.configure("TNotebook.Tab", background="#313244", foreground=SUB, padding=(16, 7),
+                 font=(DEF_FONT, 9))
+    st.map("TNotebook.Tab", background=[("selected", CARD)], foreground=[("selected", "#89b4fa")])
+    st.configure("TCombobox", fieldbackground=CARD, background="#45475a", foreground=FG,
+                 arrowcolor=FG, bordercolor="#45475a", selectbackground=CARD, selectforeground=FG)
+    st.map("TCombobox", fieldbackground=[("readonly", CARD)], foreground=[("readonly", FG)])
+    st.configure("TScale", background=BG, troughcolor="#313244")
+    st.configure("TLabelframe", background=BG, bordercolor="#45475a")
+    st.configure("TLabelframe.Label", background=BG, foreground="#89b4fa",
+                 font=(DEF_FONT, 9, "bold"))
 
 
 def _running_procs():
@@ -378,14 +422,7 @@ def _cache_file(dev):
 
 
 def dev_connected(dev):
-    if stream_pids(dev, "audio"):
-        return True
-    try:
-        pid = int(open(_pid_file(dev)).read().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+    return bool(stream_pids(dev, "audio"))
 
 
 def _adb_ok(addr, timeout=3):
@@ -417,11 +454,35 @@ def dev_addr(dev):
     return c or cfg
 
 
+def set_pc_gain(dev, pct):
+    # Attenuate this device's audio stream on the PC side. Needed for playback capture,
+    # whose level ignores the phone volume. Uses pactl on the matching sink-input.
+    node = "stream_" + _sanitize_id(stream_target(dev))
+    try:
+        out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True,
+                             text=True, timeout=6).stdout
+    except Exception:
+        return
+    idx = cur = None
+    for ln in out.splitlines():
+        m = re.match(r"Sink Input #(\d+)", ln.strip())
+        if m:
+            cur = m.group(1)
+            continue
+        if cur and ('node.name = "%s"' % node) in ln:
+            idx = cur
+            break
+    if idx:
+        try:
+            subprocess.run(["pactl", "set-sink-input-volume", idx, "%d%%" % max(0, min(100, int(pct)))],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
 def start_stream(dev):
     if dev_connected(dev) or not os.path.exists(STREAM_SCRIPT):
         return
-    if stream_pids(dev, "mic"):   # audio & mic conflict on the same phone -> keep them exclusive
-        stop_mic(dev)
     try:
         buf, codec, br = media_params(dev, "audio")
         subprocess.Popen(["setsid", STREAM_SCRIPT, script_target(dev, "audio"),
@@ -443,10 +504,6 @@ def stop_stream(dev):
         if info and info.get("state") == "PLAYING":
             run_adb(addr, ["input", "keyevent", "85"])
             time.sleep(0.6)
-    try:
-        _kill_tree(int(open(_pid_file(dev)).read().strip()))
-    except Exception:
-        pass
     for pid in stream_pids(dev, "audio"):
         _kill_tree(pid)
     try:
@@ -464,21 +521,12 @@ def _mic_pid_file(dev):
 
 
 def mic_running(dev):
-    if stream_pids(dev, "mic"):
-        return True
-    try:
-        pid = int(open(_mic_pid_file(dev)).read().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+    return bool(stream_pids(dev, "mic"))
 
 
 def start_mic(dev):
     if mic_running(dev) or not os.path.exists(STREAM_SCRIPT):
         return
-    if stream_pids(dev, "audio"):   # audio & mic conflict on the same phone -> keep them exclusive
-        stop_stream(dev)
     try:
         buf, codec, br = media_params(dev, "mic")
         subprocess.Popen(["setsid", STREAM_SCRIPT, script_target(dev, "mic"),
@@ -491,10 +539,6 @@ def start_mic(dev):
 
 
 def stop_mic(dev):
-    try:
-        _kill_tree(int(open(_mic_pid_file(dev)).read().strip()))
-    except Exception:
-        pass
     for pid in stream_pids(dev, "mic"):
         _kill_tree(pid)
     try:
@@ -512,15 +556,7 @@ def _vid_pid_file(dev, mode):
 
 
 def video_running(dev, mode):
-    role = "screen" if mode == "screen" else "camera"
-    if stream_pids(dev, role):
-        return True
-    try:
-        pid = int(open(_vid_pid_file(dev, mode)).read().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+    return bool(stream_pids(dev, "screen" if mode == "screen" else "camera"))
 
 
 def start_video(dev, mode):
@@ -542,10 +578,6 @@ def start_video(dev, mode):
 
 def stop_video(dev, mode):
     role = "screen" if mode == "screen" else "camera"
-    try:
-        _kill_tree(int(open(_vid_pid_file(dev, mode)).read().strip()))
-    except Exception:
-        pass
     for pid in stream_pids(dev, role):
         _kill_tree(pid)
     try:
@@ -677,6 +709,23 @@ def parse_media(dump):
 
 
 MCP_SESSIONS = {}
+MCP_TOKENS = {}
+MCP_LOCK = threading.Lock()
+
+
+def _mcp_close_all():
+    # Close MCP sessions so they don't accumulate on the phone (server caps them -> 503).
+    for url, sid in list(MCP_SESSIONS.items()):
+        tok = MCP_TOKENS.get(url, "")
+        try:
+            subprocess.run(["curl", "-sk", "-m", "3", "-X", "DELETE", url,
+                            "-H", "Authorization: Bearer " + tok,
+                            "-H", "Mcp-Session-Id: " + sid],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+    MCP_SESSIONS.clear()
+    MCP_TOKENS.clear()
 
 
 def get_volume(addr):
@@ -721,13 +770,62 @@ def mcp_like(dev):
     return False
 
 
-def send_favorite(dev):
-    # Prefer MCP (fires the notification's like action); fall back to tapping the shade.
-    try:
-        if mcp_like(dev):
+LIKE_UI_RE = re.compile(r"\u8d5e|\u559c\u6b22|\u6536\u85cf|like|favorite", re.I)
+
+
+def mcp_tap_like(dev):
+    # Tap an on-screen like/favorite button via MCP accessibility (for apps with no media
+    # notification action, e.g. Xiaohongshu). Returns True if something was tapped.
+    url = dev.get("mcp_url")
+    token = dev.get("mcp_token")
+    if not url or not token:
+        return False
+    txt = _mcp_text(url, token, "android_get_screen_state", {})
+    if not txt:
+        return False
+    in_win = False
+    for line in txt.splitlines():
+        if line.startswith("--- window:"):
+            in_win = ("type:APPLICATION" in line) and ("focused:true" in line)
+            continue
+        if line.startswith("--- ") or line.startswith("hierarchy:"):
+            in_win = False
+        if not in_win or line.startswith("node_id"):
+            continue
+        f = line.split("\t")
+        if len(f) < 7:
+            continue
+        nid, text, desc, bounds, flags = f[0], f[2], f[3], f[5], f[6]
+        label = (text if text and text != "-" else "") + " " + (desc if desc and desc != "-" else "")
+        if not LIKE_UI_RE.search(label) or "clk" not in flags:
+            continue
+        if nid and not nid.startswith("node_"):
+            nid = "node_" + nid
+        r = _mcp_text(url, token, "android_click_node", {"node_id": nid})
+        if r is not None and "rror" not in r:
             return True
+        m = re.match(r"(\d+),(\d+),(\d+),(\d+)", bounds or "")
+        if m:
+            x1, y1, x2, y2 = map(int, m.groups())
+            _mcp_text(url, token, "android_tap", {"x": (x1 + x2) // 2, "y": (y1 + y2) // 2})
+            return True
+    return False
+
+
+def send_favorite(dev):
+    # MCP first: notification like action, then an on-screen like tap.
+    # The adb notification-shade fallback is only used when MCP is not available.
+    try:
+        r = mcp_like(dev)
     except Exception:
-        pass
+        r = None
+    if r is True:
+        return True
+    if r is False:
+        try:
+            return mcp_tap_like(dev)
+        except Exception:
+            return False
     addr = dev_addr(dev)
     if not addr:
         return False
@@ -780,17 +878,22 @@ def _mcp_session(url, token):
     sid = MCP_SESSIONS.get(url)
     if sid:
         return sid
-    out = _mcp_curl(url, token, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                   "clientInfo": {"name": "phone-stream", "version": "1"}}}, dump_headers=True)
-    sid = None
-    for ln in out.splitlines():
-        if ln.lower().startswith("mcp-session-id:"):
-            sid = ln.split(":", 1)[1].strip()
-    if sid:
-        _mcp_curl(url, token, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
-        MCP_SESSIONS[url] = sid
-    return sid
+    with MCP_LOCK:
+        sid = MCP_SESSIONS.get(url)
+        if sid:
+            return sid
+        out = _mcp_curl(url, token, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "phone-stream", "version": "1"}}}, dump_headers=True)
+        sid = None
+        for ln in out.splitlines():
+            if ln.lower().startswith("mcp-session-id:"):
+                sid = ln.split(":", 1)[1].strip()
+        if sid:
+            _mcp_curl(url, token, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+            MCP_SESSIONS[url] = sid
+            MCP_TOKENS[url] = token
+        return sid
 
 
 def _mcp_text(url, token, name, args):
@@ -899,6 +1002,7 @@ class App:
         root.minsize(430, 280)
         root.configure(bg=BG)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        apply_style(root)
         self._build()
         self._sync_cards()
         self.root.after(200, self.refresh)
@@ -923,6 +1027,7 @@ class App:
         th = threading.Thread(target=clean, daemon=True)
         th.start()
         th.join(timeout=6)
+        _mcp_close_all()
         self.root.destroy()
 
     def toggle_lang(self):
@@ -966,14 +1071,22 @@ class App:
         # Pack the button group first so it keeps priority and is never clipped when the window shrinks.
         btnbox = tk.Frame(head, bg=bg)
         btnbox.pack(side=tk.RIGHT)
-        togb = tk.Button(btnbox, text=t("connect"), width=6,
-                         command=lambda dd=d: self.do_toggle_conn(dd))
-        micb = tk.Button(btnbox, text="🎤", width=3, command=lambda dd=d: self.do_mic(dd))
-        camb = tk.Button(btnbox, text="📷", width=3, command=lambda dd=d: self.do_camera(dd))
-        scrb = tk.Button(btnbox, text="🖥", width=3, command=lambda dd=d: self.do_screen(dd))
-        setb = tk.Button(btnbox, text="⚙", width=3, command=lambda dd=d: self.open_settings(dd))
+
+        def chip(label, cmd, width=4):
+            return tk.Button(btnbox, text=label, width=width, relief="flat", bd=0,
+                             font=(DEF_FONT, 9, "bold"), cursor="hand2",
+                             command=cmd, **chip_style(False, CHIP_OFF))
+
+        togb = tk.Button(btnbox, text=t("connect"), width=6, relief="flat", bd=0,
+                         font=(DEF_FONT, 10), cursor="hand2",
+                         command=lambda dd=d: self.do_toggle_conn(dd),
+                         **chip_style(False, CHIP_OFF))
+        micb = chip("MIC", lambda dd=d: self.do_mic(dd))
+        camb = chip("CAM", lambda dd=d: self.do_camera(dd))
+        scrb = chip("SCR", lambda dd=d: self.do_screen(dd))
+        setb = chip("SET", lambda dd=d: self.open_settings(dd))
         for b in (togb, micb, camb, scrb, setb):
-            b.pack(side=tk.LEFT, padx=2)
+            b.pack(side=tk.LEFT, padx=3, pady=1)
         # Device info on the left (yields space to the buttons when narrow).
         dot = tk.Label(head, text="○", bg=bg, fg="#f38ba8", font=(DEF_FONT, 11))
         dot.pack(side=tk.LEFT)
@@ -1005,7 +1118,7 @@ class App:
                   command=lambda dd=d: self.send_key(dd, 87)).pack(side=tk.LEFT, padx=1)
         tk.Button(bar, text="♥", width=3, fg="#f38ba8",
                   command=lambda dd=d: threading.Thread(
-                      target=send_favorite, args=(dev_addr(dd),), daemon=True).start()
+                      target=send_favorite, args=(dd,), daemon=True).start()
                   ).pack(side=tk.LEFT, padx=(1, 8))
         tk.Button(bar, text="🔉", width=3,
                   command=lambda dd=d: self.send_key(dd, 25)).pack(side=tk.LEFT, padx=1)
@@ -1044,6 +1157,21 @@ class App:
         vol_scale.bind("<ButtonPress-1>", _vol_press)
         vol_scale.bind("<ButtonRelease-1>", _vol_release)
 
+        if (d.get("source") or "output") == "playback":
+            # PC-side gain: playback capture ignores the phone volume, so attenuate here.
+            gbar = tk.Frame(card, bg=bg)
+            gbar.pack(fill=tk.X, padx=12, pady=(0, 8))
+            tk.Label(gbar, text=t("pc_gain"), bg=bg, fg=SUB,
+                     font=(DEF_FONT, 9)).pack(side=tk.LEFT)
+            gvar = tk.DoubleVar(value=100)
+            gsc = ttk.Scale(gbar, from_=0, to=100, orient="horizontal", variable=gvar, length=180)
+            gval = tk.Label(gbar, text="100%", bg=bg, fg=SUB, font=(DEF_FONT, 9), width=5)
+            gsc.pack(side=tk.LEFT, padx=4)
+            gval.pack(side=tk.LEFT)
+            gsc.configure(command=lambda v, lv=gval: lv.config(text="%d%%" % int(float(v))))
+            gsc.bind("<ButtonRelease-1>", lambda e, dd=d, vv=gvar: threading.Thread(
+                target=set_pc_gain, args=(dd, int(float(vv.get()))), daemon=True).start())
+
         return {"frame": card, "dot": dot, "name": name, "addr": addr,
                 "tog": togb, "micb": micb, "camb": camb, "scrb": scrb,
                 "player": player, "title": title, "artist": artist, "pp": pp,
@@ -1074,17 +1202,30 @@ class App:
     def _update_conn_states(self):
         for k, c in self.cards.items():
             d = c["dev"]
-            connected = dev_connected(d)
-            c["micb"].config(text="🎤✓" if mic_running(d) else "🎤",
-                             fg="#a6e3a1" if mic_running(d) else "#f38ba8")
-            c["camb"].config(text="📷✓" if video_running(d, "camera") else "📷",
-                             fg="#a6e3a1" if video_running(d, "camera") else "#f38ba8")
-            c["scrb"].config(text="🖥✓" if video_running(d, "screen") else "🖥",
-                             fg="#a6e3a1" if video_running(d, "screen") else "#f38ba8")
-            c["dot"].config(text="●" if connected else "○",
-                            fg="#a6e3a1" if connected else "#f38ba8")
-            c["tog"].config(text=t("disconnect") if connected else t("connect"))
-            c["addr"].config(text=d.get("addr", "") + ("  \u00b7 USB" if usb_ok(d) else ""))
+            st = c.setdefault("st", {})
+            connected = bool(dev_connected(d))
+            mic = bool(mic_running(d))
+            cam = bool(video_running(d, "camera"))
+            scr = bool(video_running(d, "screen"))
+            if st.get("conn") != connected:
+                st["conn"] = connected
+                c["tog"].config(text=t("disconnect") if connected else t("connect"),
+                                **chip_style(connected, ACC_MIC))
+                c["dot"].config(text="\u25cf" if connected else "\u25cb",
+                                fg="#a6e3a1" if connected else "#f38ba8")
+            if st.get("mic") != mic:
+                st["mic"] = mic
+                c["micb"].config(**chip_style(mic, ACC_MIC))
+            if st.get("cam") != cam:
+                st["cam"] = cam
+                c["camb"].config(**chip_style(cam, ACC_CAM))
+            if st.get("scr") != scr:
+                st["scr"] = scr
+                c["scrb"].config(**chip_style(scr, ACC_SCR))
+            usb = usb_ok(d)
+            if st.get("iface") != (usb, d.get("addr", "")):
+                st["iface"] = (usb, d.get("addr", ""))
+                c["addr"].config(text=d.get("addr", "") + ("  \u00b7 USB" if usb else ""))
 
     def force_scan(self):
         threading.Thread(target=self._scan_and_merge, daemon=True).start()
@@ -1119,9 +1260,16 @@ class App:
         win = tk.Toplevel(self.root)
         win.title(t("settings_title").format(name=dev.get("name", "")))
         win.configure(bg=BG)
-        win.geometry("620x440")
+        win.geometry("660x470")
         win.transient(self.root)
         win.grab_set()
+        win.update_idletasks()
+        try:
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 60
+            win.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except Exception:
+            pass
 
         name_var = tk.StringVar(value=dev.get("name", ""))
         source_var = tk.StringVar(value=dev.get("source", "output"))
@@ -1174,30 +1322,32 @@ class App:
             vars[kind] = {}
             base = 0
             if kind == "audio":
-                tk.Label(fr, text=t("source"), bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
-                    row=0, column=0, sticky="w", padx=14, pady=(12, 0))
-                ttk.Combobox(fr, values=["output", "playback", "mic"], textvariable=source_var,
-                             state="readonly", width=16).grid(row=0, column=1, sticky="w")
-                tk.Label(fr, text=t("source_hint"), bg=BG, fg="#6c7086",
-                         font=(DEF_FONT, 8)).grid(row=1, column=1, sticky="w")
-                base = 2
+                srow = tk.Frame(fr, bg=BG)
+                srow.grid(row=0, column=0, columnspan=2, sticky="w", padx=18, pady=(16, 2))
+                tk.Label(srow, text=t("source"), bg=BG, fg=FG,
+                         font=(DEF_FONT, 10)).pack(side=tk.LEFT)
+                ttk.Combobox(srow, values=["output", "playback", "mic"],
+                             textvariable=source_var, state="readonly",
+                             width=16).pack(side=tk.LEFT, padx=10)
+                tk.Label(srow, text=t("source_hint"), bg=BG, fg="#6c7086",
+                         font=(DEF_FONT, 8)).pack(side=tk.LEFT)
+                base = 1
             wi, us = get_params(dev, kind)
             for col, (tr_name, src) in enumerate((("WiFi", wi), ("USB", us))):
-                box = tk.Frame(fr, bg=BG)
-                box.grid(row=base, column=col, sticky="n", padx=22, pady=14)
-                tk.Label(box, text=tr_name, bg=BG, fg="#89b4fa",
-                         font=(DEF_FONT, 10, "bold")).grid(row=0, column=0, columnspan=2,
-                                                           sticky="w", pady=(0, 6))
-                vars[kind][tr_name.lower()] = {}
+                lf = ttk.LabelFrame(fr, text=" " + tr_name + " ")
+                lf.grid(row=base, column=col, sticky="n", padx=18, pady=14)
                 for i, key in enumerate(PARAM_KEYS[kind]):
-                    tk.Label(box, text=label_for(kind, key), bg=BG, fg=FG,
-                             font=(DEF_FONT, 9)).grid(row=1 + i, column=0, sticky="w", pady=4)
+                    tk.Label(lf, text=label_for(kind, key), bg=BG, fg=SUB,
+                             font=(DEF_FONT, 9)).grid(row=i, column=0, sticky="e",
+                                                      padx=(14, 10), pady=6)
                     v = tk.StringVar(value=str(src.get(key, "")))
-                    make_widget(box, kind, key, v).grid(row=1 + i, column=1, sticky="w", padx=8)
-                    vars[kind][tr_name.lower()][key] = v
+                    make_widget(lf, kind, key, v).grid(row=i, column=1, sticky="w",
+                                                       padx=(0, 16), pady=6)
+                    vars[kind].setdefault(tr_name.lower(), {})[key] = v
             if kind in ("screen", "camera"):
                 tk.Label(fr, text=t("size_hint"), bg=BG, fg="#6c7086",
-                         font=(DEF_FONT, 8)).grid(row=1, column=0, columnspan=2, sticky="w", padx=22)
+                         font=(DEF_FONT, 8)).grid(row=base + 1, column=0, columnspan=2,
+                                                  sticky="w", padx=18, pady=(0, 8))
             return fr
 
         def ctab():
@@ -1205,11 +1355,12 @@ class App:
             nb.add(fr, text=t("connection"))
             tk.Label(fr, text=t("conn_hint"), bg=BG, fg="#6c7086",
                      font=(DEF_FONT, 8)).grid(row=0, column=0, columnspan=2, sticky="w",
-                                              padx=14, pady=(14, 6))
+                                              padx=18, pady=(16, 8))
             cv = {}
             for i, kind in enumerate(CONN_KINDS):
                 tk.Label(fr, text=t("conn_" + kind), bg=BG, fg=FG,
-                         font=(DEF_FONT, 10)).grid(row=1 + i, column=0, sticky="w", padx=14, pady=8)
+                         font=(DEF_FONT, 10)).grid(row=1 + i, column=0, sticky="e",
+                                                   padx=(18, 12), pady=8)
                 v = tk.StringVar(value=conn_choice(dev, kind))
                 cv[kind] = v
                 ttk.Combobox(fr, values=["auto", "wifi", "usb"], textvariable=v,
@@ -1361,18 +1512,6 @@ class App:
                 c["vol_val"].config(text=str(vol[0]))
             except Exception:
                 pass
-        c["dot"].config(text="●" if connected else "○",
-                        fg="#a6e3a1" if connected else "#f38ba8")
-        c["tog"].config(text=t("disconnect") if connected else t("connect"))
-        mic = mic_running(d)
-        c["micb"].config(text="🎤✓" if mic else "🎤",
-                         fg="#a6e3a1" if mic else "#f38ba8")
-        cam = video_running(d, "camera")
-        c["camb"].config(text="📷✓" if cam else "📷",
-                         fg="#a6e3a1" if cam else "#f38ba8")
-        scr = video_running(d, "screen")
-        c["scrb"].config(text="🖥✓" if scr else "🖥",
-                         fg="#a6e3a1" if scr else "#f38ba8")
         if not info or not info.get("package"):
             c["player"].config(text=t("no_media"))
             c["title"].config(text="")
@@ -1399,6 +1538,14 @@ def main():
         fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return
+
+    def _bye(*_a):
+        # Close MCP sessions on SIGTERM/INT so they don't pile up on the phone.
+        _mcp_close_all()
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _bye)
+    signal.signal(signal.SIGINT, _bye)
     root = tk.Tk()
     App(root)
     root.mainloop()

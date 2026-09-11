@@ -74,6 +74,14 @@ A ✓ marks an enabled toggle. Settings are saved to `~/.config/phone-stream/str
 
 > Support varies by device: if a phone yields silence with `output`, try `playback`.
 
+### Like button (♥)
+
+Each card has a ♥ button to like/collect the current track. It fires the media notification's like action via the phone-side MCP, or taps an on-screen like button through accessibility (for apps with no media notification action). Without MCP it falls back to the notification shade.
+
+### PC gain
+
+When a device's audio source is `playback` (playback capture ignores the phone volume), the card shows a **PC Gain** slider that attenuates that stream on the computer (`pactl`).
+
 ### Connection: USB or WiFi
 
 Each stream (audio / mic / screen / camera) can independently use **USB** or **WiFi ADB**. Set it per device in **⚙ Settings → Connection (ADB)**:

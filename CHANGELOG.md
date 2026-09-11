@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.12 (2026-09-11)
+
+### Added
+- **PC Gain** slider on a card, shown only when its audio source is `playback` (playback capture ignores the phone volume); it attenuates the stream on the PC side via `pactl`
+- Card ♥: when there is no media-notification like action, it now taps an on-screen like/favorite button through MCP accessibility (e.g. Xiaohongshu) instead of opening and closing the notification shade
+
+### Changed
+- Microphone and audio can run **at the same time** again (the v0.2.11 mutual exclusion was reverted)
+- MIC / CAM / SCR / SET are now flat "indicator" chips: dim = off, filled with the stream's accent colour = on (no more `✓` suffix)
+- Settings uses a dark ttk theme; WiFi / USB parameter groups are framed boxes with right-aligned labels
+- State chips are repainted only when they change (no more flicker)
+
+### Fixed
+- The ♥ button passed the wrong argument and silently did nothing
+- MCP sessions are now closed on exit / SIGTERM and created under a lock, so they no longer pile up on the phone (which caused `503 Too many active sessions`)
+- Running streams are detected from the process list and stale pid files are ignored (fixes camera/screen chips showing "on" and stops killing a recycled pid)
+
 ## v0.2.11 (2026-09-11)
 
 ### Fixed
