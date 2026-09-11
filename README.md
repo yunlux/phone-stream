@@ -74,6 +74,16 @@ A ✓ marks an enabled toggle. Settings are saved to `~/.config/phone-stream/str
 
 > Support varies by device: if a phone yields silence with `output`, try `playback`.
 
+### Connection: USB or WiFi
+
+Each stream (audio / mic / screen / camera) can independently use **USB** or **WiFi ADB**. Set it per device in **⚙ Settings → Connection (ADB)**:
+
+| Value | Meaning |
+| --- | --- |
+| `auto` | use USB when the phone is plugged in, otherwise WiFi (default) |
+| `wifi` | always wireless debugging (mDNS discovery) |
+| `usb` | always USB (`usb:<serial>`) |
+
 ### Streaming into a specific PipeWire sink (optional)
 
 By default audio plays to the system default output. To route it into a virtual sink

@@ -74,6 +74,16 @@ phone_video_scrcpy <序列号|IP:端口> <screen|camera|camera-back> [显示名]
 
 > 不同机型支持不同：若某台手机 `output` 无声，改用 `playback` 通常可用。
 
+### 连接方式：USB 或 WiFi
+
+每路流（声音 / 麦克风 / 屏幕 / 相机）可各自独立选择 **USB** 或 **WiFi ADB**。在每台设备的 **⚙ 设置 → 连接方式 (ADB)** 里配置：
+
+| 取值 | 含义 |
+| --- | --- |
+| `auto` | 插着 USB 时优先用 USB，否则走 WiFi（默认） |
+| `wifi` | 始终用无线调试（mDNS 发现） |
+| `usb` | 始终用 USB（`usb:<序列号>`） |
+
 ### 输出到指定 PipeWire 虚拟设备（可选）
 
 默认播放到系统默认输出。若想让串流进入某个虚拟 sink（例如直播链路）：

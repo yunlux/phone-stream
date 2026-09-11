@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.6 (2026-09-11)
+
+### Added
+- Per-stream **USB / WiFi ADB** selection (`auto` / `wifi` / `usb`) in each device's settings; a `· USB` marker shows when the device is connected over USB
+- Scripts accept a `usb:<serial>` target to use a USB-connected device directly (no mDNS/discovery)
+
+### Changed
+- adb control commands automatically use the USB serial when the device is connected over USB
+
 ## v0.2.5 (2026-09-11)
 
 ### Removed

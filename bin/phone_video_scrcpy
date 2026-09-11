@@ -1,6 +1,9 @@
 #!/bin/bash
 # Generic phone video streaming (screen mirror / camera).
-# Usage: phone_video_scrcpy <serial|IP:port> <screen|camera|camera-back> [name]
+# Usage: phone_video_scrcpy <serial|IP:port|usb:serial> <screen|camera|camera-back> [name]
+#   serial    : auto-discover the device address via mDNS
+#   IP:port   : use directly (e.g. manually added devices)
+#   usb:serial: use a USB-connected device directly (no discovery/connect)
 # Features: one instance per device+mode, auto-reconnect, shows a window, no audio.
 set -u
 
@@ -24,7 +27,11 @@ INTERVAL=2
 CACHE_DIR="${PHONE_STREAM_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/phone-stream}"
 mkdir -p "$CACHE_DIR"
 
-if [[ $TARGET == *:* ]]; then
+if [[ $TARGET == usb:* ]]; then
+    KIND=usb
+    TARGET="${TARGET#usb:}"
+    ID=$(printf '%s' "$TARGET" | tr -c 'A-Za-z0-9_' '_')"_$MODE_KEY"
+elif [[ $TARGET == *:* ]]; then
     KIND=addr
     ID=$(printf '%s' "$TARGET" | tr '.:' '__')"_$MODE_KEY"
 else
@@ -64,7 +71,7 @@ discover() {
 }
 
 resolve_addr() {
-    if [[ $KIND == addr ]]; then
+    if [[ $KIND == addr || $KIND == usb ]]; then
         echo "$TARGET"
         return
     fi
@@ -100,7 +107,7 @@ esac
 
 LOG "video stream start: $WINTITLE ($ADDR)"
 while true; do
-    adb connect "$ADDR" >/dev/null 2>&1
+    [[ $KIND != usb ]] && adb connect "$ADDR" >/dev/null 2>&1
     waited=0
     while [[ $(dev_state "$ADDR") != device ]]; do
         sleep "$INTERVAL"
@@ -109,14 +116,14 @@ while true; do
             a=$(discover)
             [[ -n $a ]] && ADDR="$a"
         fi
-        adb connect "$ADDR" >/dev/null 2>&1
+        [[ $KIND != usb ]] && adb connect "$ADDR" >/dev/null 2>&1
         [[ $(dev_state "$ADDR") == device ]] && break
         if ((waited >= WAIT_TIMEOUT)); then
-            LOG "connect timeout: $ADDR"
+            LOG "${KIND} device not found: $ADDR"
             exit 1
         fi
     done
-    save_addr "$ADDR"
+    [[ $KIND != usb ]] && save_addr "$ADDR"
 
     scrcpy --window-title="$WINTITLE" -s "$ADDR" --no-audio "${VID_ARGS[@]}"
     rc=$?
