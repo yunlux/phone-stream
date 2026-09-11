@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.10 (2026-09-11)
+
+### Changed
+- Screen/camera window titles now include the connection type, e.g. `k80 screen (USB)` / `k90 camera (WiFi)`
+
 ## v0.2.9 (2026-09-11)
 
 ### Fixed

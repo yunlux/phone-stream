@@ -100,11 +100,12 @@ if [[ -z $ADDR ]]; then
 fi
 
 VID_ARGS=()
+if [[ $KIND == usb ]]; then CONN_TAG="USB"; else CONN_TAG="WiFi"; fi
 case "$MODE_KEY" in
-    screen) WINTITLE="$SAFE_NAME screen" ;;
-    camera) WINTITLE="$SAFE_NAME camera"
+    screen) WINTITLE="$SAFE_NAME screen ($CONN_TAG)" ;;
+    camera) WINTITLE="$SAFE_NAME camera ($CONN_TAG)"
             VID_ARGS+=(--video-source=camera --camera-facing=front --capture-orientation=0) ;;
-    camera_back) WINTITLE="$SAFE_NAME back-camera"
+    camera_back) WINTITLE="$SAFE_NAME back-camera ($CONN_TAG)"
             VID_ARGS+=(--video-source=camera --camera-facing=back --capture-orientation=0) ;;
 esac
 
