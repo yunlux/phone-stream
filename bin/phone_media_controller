@@ -15,10 +15,10 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
 CONF_DIR = os.environ.get("PHONE_STREAM_HOME") or os.path.expanduser("~/.config/phone-stream")
 LOCK = os.path.join(CONF_DIR, "phone_media_controller.lock")
 CONFIG = os.path.join(CONF_DIR, "stream_devices.json")
-_HERE = os.path.dirname(os.path.abspath(__file__))
 STREAM_SCRIPT = os.path.join(_HERE, "phone_audio_scrcpy")
 VIDEO_SCRIPT = os.path.join(_HERE, "phone_video_scrcpy")
 POLL_MS = 1500
@@ -26,6 +26,7 @@ SCAN_MS = 6000
 
 PKG_NAMES = {
     "com.luna.music": "汽水音乐",
+    "com.xingin.xhs": "小红书",
     "com.netease.cloudmusic": "网易云音乐",
     "com.tencent.qqmusic": "QQ音乐",
     "com.kugou.android": "酷狗音乐",
@@ -99,15 +100,30 @@ def dev_connected(dev):
         return False
 
 
+def _adb_ok(addr, timeout=3):
+    if not addr:
+        return False
+    try:
+        out = subprocess.run(["adb", "-s", addr, "get-state"],
+                             capture_output=True, text=True, timeout=timeout)
+        return out.stdout.strip() == "device"
+    except Exception:
+        return False
+
+
 def dev_addr(dev):
-    if not dev.get("manual"):
-        try:
-            a = open(_cache_file(dev)).read().strip()
-            if a:
-                return a
-        except Exception:
-            pass
-    return dev.get("addr", "")
+    if dev.get("manual"):
+        return dev.get("addr", "")
+    cfg = dev.get("addr", "")
+    try:
+        c = open(_cache_file(dev)).read().strip()
+    except Exception:
+        c = ""
+    # 优先用扫描更新、且当前 adb 可达的地址；否则退回另一个
+    for a in (cfg, c):
+        if a and _adb_ok(a):
+            return a
+    return c or cfg
 
 
 def start_stream(dev):
@@ -324,6 +340,8 @@ def parse_media(dump):
                 cur["description"] = mm.group(1)
     if cur:
         sessions.append(cur)
+    # 过滤掉 KDE Connect 的镜像会话（那是 PC 端的媒体，不是手机自己的）
+    sessions = [x for x in sessions if x.get("package") != "org.kde.kdeconnect_tp"]
     pick = None
     if active_tag:
         pick = next((x for x in sessions if x.get("tag") == active_tag), None)
@@ -351,6 +369,117 @@ def parse_media(dump):
             "title": title, "artist": artist, "desc": desc}
 
 
+MCP_SESSIONS = {}
+
+
+def get_volume(addr):
+    out = run_adb(addr, ["cmd", "media_session", "volume", "--stream", "3", "--get"])
+    m = re.search(r"volume is (\d+) in range \[0\.\.(\d+)\]", out)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def set_volume(addr, val):
+    run_adb(addr, ["cmd", "media_session", "volume", "--stream", "3", "--set", str(int(val))])
+
+
+def _mcp_curl(url, token, body, sid=None, dump_headers=False, timeout=8):
+    args = ["curl", "-sk", "-m", str(timeout), "-X", "POST", url,
+            "-H", "Authorization: Bearer " + token,
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json, text/event-stream"]
+    if dump_headers:
+        args += ["-D", "-"]
+    if sid:
+        args += ["-H", "Mcp-Session-Id: " + sid]
+    args += ["-d", json.dumps(body)]
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout + 3).stdout
+    except Exception:
+        return ""
+
+
+def _mcp_session(url, token):
+    sid = MCP_SESSIONS.get(url)
+    if sid:
+        return sid
+    out = _mcp_curl(url, token, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                   "clientInfo": {"name": "phone-stream", "version": "1"}}}, dump_headers=True)
+    sid = None
+    for ln in out.splitlines():
+        if ln.lower().startswith("mcp-session-id:"):
+            sid = ln.split(":", 1)[1].strip()
+    if sid:
+        _mcp_curl(url, token, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+        MCP_SESSIONS[url] = sid
+    return sid
+
+
+def _mcp_text(url, token, name, args):
+    sid = _mcp_session(url, token)
+    if not sid:
+        return None
+    out = _mcp_curl(url, token, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                 "params": {"name": name, "arguments": args}}, sid)
+    if not out:
+        return None
+    i = out.find('{"jsonrpc"')
+    if i > 0:
+        out = out[i:]
+    try:
+        d = json.loads(out)
+    except Exception:
+        return None
+    for c in d.get("result", {}).get("content", []):
+        if c.get("type") == "text":
+            return c.get("text", "")
+    return ""
+
+
+def mcp_media(dev):
+    """返回 (info_or_None, status)。status: None=未配置MCP / 'down'=连不上 / 'ok'=已连。"""
+    url = dev.get("mcp_url")
+    token = dev.get("mcp_token")
+    if not url or not token:
+        return None, None
+    txt = _mcp_text(url, token, "android_get_screen_state", {})
+    if txt is None or "Error executing" in txt:
+        return None, "down"
+    pkg = None
+    title = artist = None
+    in_win = False
+    candidates = []
+    for line in txt.splitlines():
+        if line.startswith("--- window:"):
+            in_win = ("type:APPLICATION" in line) and ("focused:true" in line)
+            if in_win:
+                m = re.search(r"pkg:(\S+)", line)
+                pkg = m.group(1) if m else None
+            continue
+        if line.startswith("--- ") or line.startswith("hierarchy:"):
+            in_win = False
+        if not in_win or line.startswith("node_id"):
+            continue
+        f = line.split("\t")
+        if len(f) < 5:
+            continue
+        text, resid = f[2], f[4]
+        val = text if text and text != "-" else ""
+        if resid.endswith("noteContentText") and val:
+            title = val
+        elif "NickName" in resid and val and not artist:
+            artist = val
+        if val and len(val) >= 4 and "说点什么" not in val and not val.replace(".", "").isdigit():
+            candidates.append(val)
+    if not title and candidates:
+        title = max(candidates, key=len)
+    if not title:
+        return None, "ok"
+    return {"package": pkg, "state": "PLAYING", "title": title, "artist": artist}, "ok"
+
+
 def dev_key(d):
     return d.get("serial") or d.get("addr")
 
@@ -360,15 +489,37 @@ class App:
         self.root = root
         self.devices = load_config()
         self.cards = {}
+        self._polling = {}
         root.title("手机串流")
-        root.geometry("580x620")
-        root.minsize(520, 300)
+        root.geometry("660x720")
+        root.minsize(430, 280)
         root.configure(bg=BG)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._build()
         self._sync_cards()
         self.root.after(200, self.refresh)
         self.root.after(400, self.force_scan)
         self.root.after(SCAN_MS, self._auto_scan)
+
+    def on_close(self):
+        # 关闭程序时断开所有连接（音频/麦克风/相机/屏幕）
+        def clean():
+            for d in list(self.devices):
+                try:
+                    if dev_connected(d):
+                        stop_stream(d)
+                    if mic_running(d):
+                        stop_mic(d)
+                    if video_running(d, "camera"):
+                        stop_video(d, "camera")
+                    if video_running(d, "screen"):
+                        stop_video(d, "screen")
+                except Exception:
+                    pass
+        t = threading.Thread(target=clean, daemon=True)
+        t.start()
+        t.join(timeout=6)
+        self.root.destroy()
 
     def _build(self):
         top = tk.Frame(self.root, bg=BG)
@@ -389,6 +540,18 @@ class App:
 
         head = tk.Frame(card, bg=bg)
         head.pack(fill=tk.X, padx=12, pady=(9, 2))
+        # 右侧按钮区先 pack（优先占位，窗口变窄时不会被裁掉）
+        btnbox = tk.Frame(head, bg=bg)
+        btnbox.pack(side=tk.RIGHT)
+        togb = tk.Button(btnbox, text="连接", width=6,
+                         command=lambda dd=d: self.do_toggle_conn(dd))
+        micb = tk.Button(btnbox, text="🎤", width=3, command=lambda dd=d: self.do_mic(dd))
+        camb = tk.Button(btnbox, text="📷", width=3, command=lambda dd=d: self.do_camera(dd))
+        scrb = tk.Button(btnbox, text="🖥", width=3, command=lambda dd=d: self.do_screen(dd))
+        setb = tk.Button(btnbox, text="⚙", width=3, command=lambda dd=d: self.open_settings(dd))
+        for b in (togb, micb, camb, scrb, setb):
+            b.pack(side=tk.LEFT, padx=2)
+        # 左侧设备信息（空间不足时让位于按钮）
         dot = tk.Label(head, text="○", bg=bg, fg="#f38ba8", font=(DEF_FONT, 11))
         dot.pack(side=tk.LEFT)
         tag = " [手动]" if d.get("manual") else ""
@@ -398,24 +561,6 @@ class App:
         addr = tk.Label(head, text=d.get("addr", ""), bg=bg, fg="#6c7086",
                         font=(DEF_FONT, 9))
         addr.pack(side=tk.LEFT)
-        setb = tk.Button(head, text="⚙", width=3,
-                         command=lambda dd=d: self.open_settings(dd))
-        setb.pack(side=tk.RIGHT, padx=2)
-        micb = tk.Button(head, text="🎤", width=3,
-                         command=lambda dd=d: self.do_mic(dd))
-        micb.pack(side=tk.RIGHT, padx=2)
-        camb = tk.Button(head, text="📷", width=3,
-                         command=lambda dd=d: self.do_camera(dd))
-        camb.pack(side=tk.RIGHT, padx=2)
-        scrb = tk.Button(head, text="🖥", width=3,
-                         command=lambda dd=d: self.do_screen(dd))
-        scrb.pack(side=tk.RIGHT, padx=2)
-        disc = tk.Button(head, text="断开", width=6,
-                         command=lambda dd=d: self.do_disconnect(dd))
-        disc.pack(side=tk.RIGHT, padx=2)
-        conn = tk.Button(head, text="连接", width=6,
-                         command=lambda dd=d: self.do_connect(dd))
-        conn.pack(side=tk.RIGHT, padx=2)
 
         player = tk.Label(card, text="— 无媒体 —", bg=bg, fg="#89b4fa",
                           font=(DEF_FONT, 13, "bold"), anchor="w")
@@ -427,27 +572,57 @@ class App:
         artist.pack(fill=tk.X, padx=14)
 
         bar = tk.Frame(card, bg=bg)
-        bar.pack(anchor="w", padx=12, pady=(5, 10))
-        tk.Button(bar, text="⏮ 上一曲", width=8,
-                  command=lambda dd=d: self.send_key(dd, 88)).pack(side=tk.LEFT, padx=2)
-        pp = tk.Button(bar, text="▶ 播放", width=8,
+        bar.pack(fill=tk.X, padx=12, pady=(5, 8))
+        tk.Button(bar, text="⏮", width=3,
+                  command=lambda dd=d: self.send_key(dd, 88)).pack(side=tk.LEFT, padx=1)
+        pp = tk.Button(bar, text="▶", width=3,
                        command=lambda dd=d: self.send_key(dd, 85))
-        pp.pack(side=tk.LEFT, padx=2)
-        tk.Button(bar, text="⏭ 下一曲", width=8,
-                  command=lambda dd=d: self.send_key(dd, 87)).pack(side=tk.LEFT, padx=2)
-        tk.Button(bar, text="🔉", width=3,
-                  command=lambda dd=d: self.send_key(dd, 25)).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Button(bar, text="🔊", width=3,
-                  command=lambda dd=d: self.send_key(dd, 24)).pack(side=tk.LEFT, padx=2)
+        pp.pack(side=tk.LEFT, padx=1)
+        tk.Button(bar, text="⏭", width=3,
+                  command=lambda dd=d: self.send_key(dd, 87)).pack(side=tk.LEFT, padx=1)
         tk.Button(bar, text="⏹", width=3,
-                  command=lambda dd=d: self.send_key(dd, 86)).pack(side=tk.LEFT, padx=4)
+                  command=lambda dd=d: self.send_key(dd, 86)).pack(side=tk.LEFT, padx=(1, 8))
+        tk.Button(bar, text="🔉", width=3,
+                  command=lambda dd=d: self.send_key(dd, 25)).pack(side=tk.LEFT, padx=1)
+        tk.Button(bar, text="🔊", width=3,
+                  command=lambda dd=d: self.send_key(dd, 24)).pack(side=tk.LEFT, padx=(1, 8))
+        vol_var = tk.DoubleVar(value=0)
+        vol_scale = ttk.Scale(bar, from_=0, to=150, orient="horizontal", variable=vol_var, length=150)
+        vol_val = tk.Label(bar, text="", bg=bg, fg=SUB, font=(DEF_FONT, 9), width=4)
+        vol_scale.pack(side=tk.LEFT, padx=4)
+        vol_val.pack(side=tk.LEFT)
+        vol_scale.configure(command=lambda v, lv=vol_val: lv.config(text=str(int(float(v)))))
         state = tk.Label(bar, text="", bg=bg, fg="#6c7086", font=(DEF_FONT, 9))
-        state.pack(side=tk.LEFT, padx=8)
+        state.pack(side=tk.RIGHT, padx=4)
+        vol_state = {"dragging": False}
+
+        def _vol_press(e, s=vol_state):
+            s["dragging"] = True
+
+        def _vol_release(e, dd=d, vv=vol_var, s=vol_state):
+            s["dragging"] = False
+            target = int(float(vv.get()))
+            last = int(s.get("last", target))
+            s["last"] = target
+            delta = target - last
+            a = dev_addr(dd)
+            if a and delta:
+                steps = int(round(delta / 10.0)) or (1 if delta > 0 else -1)
+                code = "24" if steps > 0 else "25"
+
+                def worker():
+                    for _ in range(abs(steps)):
+                        run_adb(a, ["input", "keyevent", code], timeout=5)
+                threading.Thread(target=worker, daemon=True).start()
+
+        vol_scale.bind("<ButtonPress-1>", _vol_press)
+        vol_scale.bind("<ButtonRelease-1>", _vol_release)
 
         return {"frame": card, "dot": dot, "name": name, "addr": addr,
-                "conn": conn, "disc": disc, "micb": micb, "camb": camb, "scrb": scrb,
+                "tog": togb, "micb": micb, "camb": camb, "scrb": scrb,
                 "player": player, "title": title, "artist": artist, "pp": pp,
-                "state": state, "dev": d}
+                "state": state, "vol_scale": vol_scale, "vol_var": vol_var,
+                "vol_val": vol_val, "vol_state": vol_state, "dev": d}
 
     def _sync_cards(self):
         keys = [dev_key(d) for d in self.devices]
@@ -482,12 +657,7 @@ class App:
                              fg="#a6e3a1" if video_running(d, "screen") else "#f38ba8")
             c["dot"].config(text="●" if connected else "○",
                             fg="#a6e3a1" if connected else "#f38ba8")
-            if connected:
-                c["conn"].config(state=tk.DISABLED)
-                c["disc"].config(state=tk.NORMAL)
-            else:
-                c["conn"].config(state=tk.NORMAL)
-                c["disc"].config(state=tk.DISABLED)
+            c["tog"].config(text="断开" if connected else "连接")
 
     def force_scan(self):
         threading.Thread(target=self._scan_and_merge, daemon=True).start()
@@ -522,10 +692,11 @@ class App:
         win = tk.Toplevel(self.root)
         win.title("设置 - " + dev.get("name", ""))
         win.configure(bg=BG)
-        win.geometry("460x350")
+        win.geometry("460x400")
         win.transient(self.root)
         win.grab_set()
 
+        name_var = tk.StringVar(value=dev.get("name", ""))
         buffer_var = tk.StringVar(value=str(dev.get("buffer", 200)))
         c = dev.get("codec", "flac")
         codec_var = tk.StringVar(value="flac (无损)" if c == "flac" else c)
@@ -540,24 +711,29 @@ class App:
             tk.Label(win, text=label, bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
                 row=r, column=0, sticky="w", padx=12, pady=8)
 
-        row(0, "延迟 (ms)")
+        row(0, "名称")
+        tk.Entry(win, textvariable=name_var, width=24).grid(row=0, column=1, sticky="w")
+        row(1, "延迟 (ms)")
         tk.Spinbox(win, from_=0, to=2000, increment=10, textvariable=buffer_var,
-                   width=10).grid(row=0, column=1, sticky="w")
-        row(1, "编解码")
+                   width=10).grid(row=1, column=1, sticky="w")
+        row(2, "编解码")
         ttk.Combobox(win, values=["flac (无损)", "opus", "aac"], textvariable=codec_var,
-                     state="readonly", width=14).grid(row=1, column=1, sticky="w")
-        row(2, "码率 (kbps)")
+                     state="readonly", width=14).grid(row=2, column=1, sticky="w")
+        row(3, "码率 (kbps)")
         ttk.Combobox(win, values=["96", "128", "192", "256", "320", "510"],
-                     textvariable=bitrate_var, width=14).grid(row=2, column=1, sticky="w")
+                     textvariable=bitrate_var, width=14).grid(row=3, column=1, sticky="w")
         tk.Label(win, text="(flac 无损时码率无效)", bg=BG, fg="#6c7086",
-                 font=(DEF_FONT, 8)).grid(row=3, column=1, sticky="w")
-        row(4, "音频源")
+                 font=(DEF_FONT, 8)).grid(row=4, column=1, sticky="w")
+        row(5, "音频源")
         ttk.Combobox(win, values=["output", "playback", "mic"], textvariable=source_var,
-                     state="readonly", width=14).grid(row=4, column=1, sticky="w")
+                     state="readonly", width=14).grid(row=5, column=1, sticky="w")
         tk.Label(win, text="(output=输出/playback=播放/mic=麦克风)", bg=BG, fg="#6c7086",
-                 font=(DEF_FONT, 8)).grid(row=5, column=1, sticky="w")
+                 font=(DEF_FONT, 8)).grid(row=6, column=1, sticky="w")
 
         def save():
+            nm = name_var.get().strip()
+            if nm:
+                dev["name"] = nm
             try:
                 dev["buffer"] = int(float(buffer_var.get()))
             except Exception:
@@ -569,10 +745,11 @@ class App:
                 pass
             dev["source"] = source_var.get()
             save_config(self.devices)
+            self._sync_cards()
             win.destroy()
 
         btns = tk.Frame(win, bg=BG)
-        btns.grid(row=6, column=0, columnspan=2, pady=16)
+        btns.grid(row=7, column=0, columnspan=2, pady=16)
         tk.Button(btns, text="保存", width=10, command=save).pack(side=tk.LEFT, padx=6)
         tk.Button(btns, text="取消", width=10, command=win.destroy).pack(side=tk.LEFT, padx=6)
 
@@ -604,6 +781,12 @@ class App:
         threading.Thread(target=stop_stream, args=(dev,), daemon=True).start()
         self.root.after(1800, self._sync_cards)
         self.root.after(1800, self.refresh)
+
+    def do_toggle_conn(self, dev):
+        if dev_connected(dev):
+            self.do_disconnect(dev)
+        else:
+            self.do_connect(dev)
 
     def do_mic(self, dev):
         # 切换该设备的麦克风声音流（独立于普通音频流）
@@ -637,30 +820,51 @@ class App:
 
     def refresh(self):
         for d in list(self.devices):
+            k = dev_key(d)
+            if self._polling.get(k):
+                continue  # 上一轮还没结束就跳过，避免轮询叠加导致界面闪动
+            self._polling[k] = True
             threading.Thread(target=self._poll_one, args=(d,), daemon=True).start()
         self.root.after(POLL_MS, self.refresh)
 
     def _poll_one(self, d):
-        connected = dev_connected(d)
-        addr = dev_addr(d)
-        info = None
-        if addr:
-            dump = run_adb(addr, ["dumpsys", "media_session"])
-            info = parse_media(dump) if dump else None
-        self.root.after(0, lambda: self._update_card(d, connected, info))
+        try:
+            connected = dev_connected(d)
+            addr = dev_addr(d)
+            info = None
+            vol = None
+            if addr:
+                dump = run_adb(addr, ["dumpsys", "media_session"])
+                info = parse_media(dump) if dump else None
+                vol = get_volume(addr)
+            mcp_status = None
+            if not info:
+                try:
+                    info, mcp_status = mcp_media(d)
+                except Exception:
+                    info, mcp_status = None, None
+            self.root.after(0, lambda: self._update_card(d, connected, info, mcp_status, vol))
+        finally:
+            self._polling[dev_key(d)] = False
 
-    def _update_card(self, d, connected, info):
+    def _update_card(self, d, connected, info, mcp_status=None, vol=None):
         c = self.cards.get(dev_key(d))
         if not c:
             return
+        tag = " [手动]" if d.get("manual") else ""
+        c["name"].config(text=d.get("name", "?") + tag)
+        vs = c.get("vol_state")
+        if vol and vs and not vs.get("dragging") and vs.get("last") != vol[0]:
+            vs["last"] = vol[0]
+            try:
+                c["vol_scale"].configure(to=vol[1])
+                c["vol_var"].set(vol[0])
+                c["vol_val"].config(text=str(vol[0]))
+            except Exception:
+                pass
         c["dot"].config(text="●" if connected else "○",
                         fg="#a6e3a1" if connected else "#f38ba8")
-        if connected:
-            c["conn"].config(state=tk.DISABLED)
-            c["disc"].config(state=tk.NORMAL)
-        else:
-            c["conn"].config(state=tk.NORMAL)
-            c["disc"].config(state=tk.DISABLED)
+        c["tog"].config(text="断开" if connected else "连接")
         mic = mic_running(d)
         c["micb"].config(text="🎤✓" if mic else "🎤",
                          fg="#a6e3a1" if mic else "#f38ba8")
@@ -674,7 +878,10 @@ class App:
             c["player"].config(text="— 无媒体 —")
             c["title"].config(text="")
             c["artist"].config(text="")
-            c["state"].config(text="")
+            if mcp_status == "down":
+                c["state"].config(text="MCP 断开", fg="#f38ba8")
+            else:
+                c["state"].config(text="", fg="#6c7086")
             c["pp"].config(text="▶ 播放")
             return
         pkg = info.get("package")
@@ -682,7 +889,7 @@ class App:
         c["title"].config(text=info.get("title") or "（无标题）")
         c["artist"].config(text=info.get("artist") or "")
         st = info.get("state") or "NONE"
-        c["state"].config(text=STATE_NAMES.get(st, st))
+        c["state"].config(text=STATE_NAMES.get(st, st), fg="#6c7086")
         c["pp"].config(text="⏸ 暂停" if st == "PLAYING" else "▶ 播放")
 
 

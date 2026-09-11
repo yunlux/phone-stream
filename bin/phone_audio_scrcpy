@@ -1,5 +1,5 @@
 #!/bin/bash
-# 通用手机声音串流（可选输出到指定 PipeWire sink）
+# 通用手机声音串流 （可选输出到指定 PipeWire sink）
 # 用法: phone_audio_scrcpy <序列号|IP:端口> [显示名]
 #   序列号: 通过 mDNS 自动发现该设备的实时 IP:端口（手机换 IP/端口也能连）
 #   IP:端口: 直接使用（手动添加的设备）
