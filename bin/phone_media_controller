@@ -1080,12 +1080,6 @@ class App:
         tk.Label(gen, text=t("name"), bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
             row=0, column=0, sticky="w", padx=14, pady=10)
         tk.Entry(gen, textvariable=name_var, width=26).grid(row=0, column=1, sticky="w")
-        tk.Label(gen, text=t("source"), bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
-            row=1, column=0, sticky="w", padx=14, pady=10)
-        ttk.Combobox(gen, values=["output", "playback", "mic"], textvariable=source_var,
-                     state="readonly", width=16).grid(row=1, column=1, sticky="w")
-        tk.Label(gen, text=t("source_hint"), bg=BG, fg="#6c7086",
-                 font=(DEF_FONT, 8)).grid(row=2, column=1, sticky="w")
 
         def label_for(kind, key):
             if key == "codec":
@@ -1096,26 +1090,45 @@ class App:
 
         def make_widget(box, kind, key, var):
             if key == "buffer":
-                return tk.Spinbox(box, from_=0, to=2000, increment=10, textvariable=var, width=9)
+                return ttk.Combobox(box, values=["50", "100", "150", "200", "300", "500", "800"],
+                                    textvariable=var, width=9)
             if key == "fps":
-                return tk.Spinbox(box, from_=0, to=120, increment=1, textvariable=var, width=9)
+                return ttk.Combobox(box, values=["0", "15", "24", "25", "30", "48", "50", "60", "90", "120"],
+                                    textvariable=var, width=9)
+            if key == "size":
+                if kind == "screen":
+                    vals = ["0", "2400", "2160", "1920", "1600", "1440", "1280", "1080", "900", "720", "600", "480"]
+                else:
+                    vals = ["320x240", "640x480", "800x600", "1024x768", "1280x720",
+                            "1600x1200", "1920x1080", "2560x1440", "3840x2160"]
+                return ttk.Combobox(box, values=vals, textvariable=var, width=13)
             if key == "codec":
-                vals = ["flac", "opus", "aac"] if kind in ("audio", "mic") else ["h264", "h265", "av1"]
+                vals = (["flac", "opus", "aac"] if kind in ("audio", "mic")
+                        else ["h264", "h265", "av1", "vp8", "vp9"])
                 return ttk.Combobox(box, values=vals, textvariable=var, state="readonly", width=8)
             if key == "bitrate":
-                vals = ["96", "128", "192", "256", "320", "510"] if kind in ("audio", "mic") \
-                    else ["2", "4", "6", "8", "12", "20", "30"]
-                return ttk.Combobox(box, values=vals, textvariable=var, state="readonly", width=8)
+                vals = (["64", "96", "128", "160", "192", "256", "320", "510"] if kind in ("audio", "mic")
+                        else ["1", "2", "4", "6", "8", "10", "12", "16", "20", "30", "50"])
+                return ttk.Combobox(box, values=vals, textvariable=var, width=8)
             return tk.Entry(box, textvariable=var, width=11)
 
         def ptab(kind):
             fr = tk.Frame(nb, bg=BG)
             nb.add(fr, text=t("tab_" + kind))
             vars[kind] = {}
+            base = 0
+            if kind == "audio":
+                tk.Label(fr, text=t("source"), bg=BG, fg=FG, font=(DEF_FONT, 10)).grid(
+                    row=0, column=0, sticky="w", padx=14, pady=(12, 0))
+                ttk.Combobox(fr, values=["output", "playback", "mic"], textvariable=source_var,
+                             state="readonly", width=16).grid(row=0, column=1, sticky="w")
+                tk.Label(fr, text=t("source_hint"), bg=BG, fg="#6c7086",
+                         font=(DEF_FONT, 8)).grid(row=1, column=1, sticky="w")
+                base = 2
             wi, us = get_params(dev, kind)
             for col, (tr_name, src) in enumerate((("WiFi", wi), ("USB", us))):
                 box = tk.Frame(fr, bg=BG)
-                box.grid(row=0, column=col, sticky="n", padx=22, pady=14)
+                box.grid(row=base, column=col, sticky="n", padx=22, pady=14)
                 tk.Label(box, text=tr_name, bg=BG, fg="#89b4fa",
                          font=(DEF_FONT, 10, "bold")).grid(row=0, column=0, columnspan=2,
                                                            sticky="w", pady=(0, 6))

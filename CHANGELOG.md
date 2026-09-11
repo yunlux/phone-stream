@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.8 (2026-09-11)
+
+### Changed
+- Screen / camera parameters are now dropdowns with preset options for easy selection:
+  - screen size = long-edge px list (`0` = native); camera size = `WxH` list
+  - fps, bitrate and video codec (h264 / h265 / av1 / vp8 / vp9) are selectable too
+
 ## v0.2.7 (2026-09-11)
 
 ### Changed
