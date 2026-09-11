@@ -787,8 +787,6 @@ class App:
         pp.pack(side=tk.LEFT, padx=1)
         tk.Button(bar, text="⏭", width=3,
                   command=lambda dd=d: self.send_key(dd, 87)).pack(side=tk.LEFT, padx=1)
-        tk.Button(bar, text="⏹", width=3,
-                  command=lambda dd=d: self.send_key(dd, 86)).pack(side=tk.LEFT, padx=(1, 4))
         tk.Button(bar, text="♥", width=3, fg="#f38ba8",
                   command=lambda dd=d: threading.Thread(
                       target=send_favorite, args=(dev_addr(dd),), daemon=True).start()

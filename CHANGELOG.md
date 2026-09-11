@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.5 (2026-09-11)
+
+### Removed
+- The stop (⏹) button on each card (meaningless for these audio/video streams)
+
 ## v0.2.4 (2026-09-11)
 
 ### Added
