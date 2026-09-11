@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.9 (2026-09-11)
+
+### Fixed
+- Selecting **USB** no longer makes a stream silently do nothing when the phone is not actually on USB — it now falls back to WiFi (`wifi` still forces wireless)
+
 ## v0.2.8 (2026-09-11)
 
 ### Changed

@@ -254,8 +254,9 @@ def use_usb(dev, kind):
     ser = dev.get("serial") or ""
     if not ser or ":" in ser:
         return False
-    c = conn_choice(dev, kind)
-    return c == "usb" or (c == "auto" and usb_ok(dev))
+    if conn_choice(dev, kind) == "wifi":
+        return False
+    return usb_ok(dev)  # auto / usb -> use USB when actually present, else fall back to WiFi
 
 
 def script_target(dev, kind):
