@@ -495,6 +495,75 @@ def set_volume(addr, val):
     run_adb(addr, ["cmd", "media_session", "volume", "--stream", "3", "--set", str(int(val))])
 
 
+LIKE_RE = re.compile(r"collect|favorite|like|\u6536\u85cf|\u559c\u6b22|\u7231\u5fc3|\u7ea2\u5fc3", re.I)
+
+
+def mcp_like(dev):
+    # Fire the media notification's like/collect action via the phone-side MCP.
+    # True = fired, False = reachable but no like action, None = MCP unset/unreachable.
+    url = dev.get("mcp_url")
+    token = dev.get("mcp_token")
+    if not url or not token:
+        return None
+    txt = _mcp_text(url, token, "android_notification_list", {})
+    if not txt:
+        return None
+    i = txt.find('{"notifications"')
+    if i < 0:
+        return None
+    try:
+        data = json.loads(txt[i:])
+    except Exception:
+        return None
+    for n in data.get("notifications", []) or []:
+        for a in n.get("actions", []) or []:
+            if LIKE_RE.search(a.get("title", "") or ""):
+                _mcp_text(url, token, "android_notification_action",
+                          {"notification_id": n.get("notification_id"),
+                           "action_id": a.get("action_id")})
+                return True
+    return False
+
+
+def send_favorite(dev):
+    # Prefer MCP (fires the notification's like action); fall back to tapping the shade.
+    try:
+        if mcp_like(dev):
+            return True
+    except Exception:
+        pass
+    addr = dev_addr(dev)
+    if not addr:
+        return False
+    try:
+        run_adb(addr, ["cmd", "statusbar", "expand-notifications"], timeout=5)
+        time.sleep(1.2)
+        run_adb(addr, ["uiautomator", "dump", "/sdcard/.ps_ui.xml"], timeout=8)
+        xml = run_adb(addr, ["cat", "/sdcard/.ps_ui.xml"], timeout=6)
+        cx = cy = None
+        for m in re.finditer(r"<node[^>]*>", xml):
+            tag = m.group(0)
+            if 'clickable="true"' not in tag:
+                continue
+            cd = re.search(r'content-desc="([^"]*)"', tag)
+            tx = re.search(r'text="([^"]*)"', tag)
+            label = (cd.group(1) if cd else "") + " " + (tx.group(1) if tx else "")
+            if not LIKE_RE.search(label):
+                continue
+            b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', tag)
+            if b:
+                x1, y1, x2, y2 = map(int, b.groups())
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                break
+        if cx is not None:
+            run_adb(addr, ["input", "tap", str(cx), str(cy)], timeout=5)
+        run_adb(addr, ["cmd", "statusbar", "collapse"], timeout=5)
+        run_adb(addr, ["rm", "-f", "/sdcard/.ps_ui.xml"], timeout=5)
+        return cx is not None
+    except Exception:
+        return False
+
+
 def _mcp_curl(url, token, body, sid=None, dump_headers=False, timeout=8):
     args = ["curl", "-sk", "-m", str(timeout), "-X", "POST", url,
             "-H", "Authorization: Bearer " + token,
@@ -719,7 +788,11 @@ class App:
         tk.Button(bar, text="⏭", width=3,
                   command=lambda dd=d: self.send_key(dd, 87)).pack(side=tk.LEFT, padx=1)
         tk.Button(bar, text="⏹", width=3,
-                  command=lambda dd=d: self.send_key(dd, 86)).pack(side=tk.LEFT, padx=(1, 8))
+                  command=lambda dd=d: self.send_key(dd, 86)).pack(side=tk.LEFT, padx=(1, 4))
+        tk.Button(bar, text="♥", width=3, fg="#f38ba8",
+                  command=lambda dd=d: threading.Thread(
+                      target=send_favorite, args=(dev_addr(dd),), daemon=True).start()
+                  ).pack(side=tk.LEFT, padx=(1, 8))
         tk.Button(bar, text="🔉", width=3,
                   command=lambda dd=d: self.send_key(dd, 25)).pack(side=tk.LEFT, padx=1)
         tk.Button(bar, text="🔊", width=3,

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.4 (2026-09-11)
+
+### Added
+- A ♥ button on each card to like/collect the current track: it fires the media notification's like action via the phone-side MCP (`android_notification_list` + `android_notification_action`), falling back to expanding the notification shade and tapping it via adb
+
 ## v0.2.3 (2026-09-11)
 
 ### Changed
