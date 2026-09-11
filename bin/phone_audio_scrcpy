@@ -113,7 +113,7 @@ while true; do
     esac
     ENVP=()
     if [[ -n ${PHONE_STREAM_SINK:-} ]]; then
-        ENVP=(env PIPEWIRE_PROPS="{ \"target.object\": \"${PHONE_STREAM_SINK}\", \"node.name\": \"stream_${ID}\", \"node.description\": \"${SAFE_NAME}\" }")
+        ENVP=(env PIPEWIRE_PROPS="{ \"target.object\": \"${PHONE_STREAM_SINK}\", \"node.name\": \"stream_${ID}\", \"node.description\": \"${SAFE_NAME}\", \"application.name\": \"${SAFE_NAME}\", \"media.name\": \"\" }")
     fi
     "${ENVP[@]}" scrcpy --window-title="$SAFE_NAME" -s "$ADDR" --no-video --no-window "${AUDIO_ARGS[@]}"
     rc=$?

@@ -27,7 +27,7 @@ s = open(p).read()
 pat = re.compile(r'    PIPEWIRE_PROPS="\{ \\"target\.object\\": \\"virtual_A\\".*?\n        scrcpy .*?\n', re.S)
 rep = ('    ENVP=()\n'
        '    if [[ -n ${PHONE_STREAM_SINK:-} ]]; then\n'
-       '        ENVP=(env PIPEWIRE_PROPS="{ \\"target.object\\": \\"${PHONE_STREAM_SINK}\\", \\"node.name\\": \\"stream_${ID}\\", \\"node.description\\": \\"${SAFE_NAME}\\" }")\n'
+       '        ENVP=(env PIPEWIRE_PROPS="{ \\"target.object\\": \\"${PHONE_STREAM_SINK}\\", \\"node.name\\": \\"stream_${ID}\\", \\"node.description\\": \\"${SAFE_NAME}\\", \\"application.name\\": \\"${SAFE_NAME}\\", \\"media.name\\": \\"\\" }")\n'
        '    fi\n'
        '    "${ENVP[@]}" scrcpy --window-title="$SAFE_NAME" -s "$ADDR" --no-video --no-window "${AUDIO_ARGS[@]}"\n')
 s2 = pat.sub(rep, s, count=1)

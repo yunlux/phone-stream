@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.3 (2026-09-11)
+
+### Changed
+- Audio stream nodes are named `<device> audio` / `<device> mic` (e.g. `k80 audio`); `application.name` and `node.description` are set to that name and `media.name` is emptied, so qpwgraph shows exactly that name (no `scrcpy/... [scrcpy]`)
+
+### Fixed
+- A stable per-device/role node name lets qpwgraph remember the node position (previously the name changed on every connection, so new nodes were dropped far away)
+
 ## v0.2.2 (2026-09-11)
 
 ### Added

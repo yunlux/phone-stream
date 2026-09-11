@@ -239,7 +239,7 @@ def start_stream(dev):
         return
     try:
         subprocess.Popen(["setsid", STREAM_SCRIPT, stream_target(dev),
-                          dev.get("name", ""), str(dev.get("buffer", 200)),
+                          node_base(dev) + " audio", str(dev.get("buffer", 200)),
                           str(dev.get("codec", "flac")), str(dev.get("bitrate", "")),
                           str(dev.get("source", "output"))],
                          start_new_session=True,
@@ -296,7 +296,7 @@ def start_mic(dev):
         return
     try:
         subprocess.Popen(["setsid", STREAM_SCRIPT, stream_target(dev),
-                          dev.get("name", "") + " MIC",
+                          node_base(dev) + " mic",
                           str(dev.get("buffer", 200)), str(dev.get("codec", "flac")),
                           str(dev.get("bitrate", "")), "mic", "_mic"],
                          start_new_session=True, stdin=subprocess.DEVNULL,
@@ -594,6 +594,13 @@ def mcp_media(dev):
 
 def dev_key(d):
     return d.get("serial") or d.get("addr")
+
+
+def node_base(dev):
+    # Short tag for the PipeWire node name, e.g. "REDMI K80" -> "k80".
+    s = (dev.get("short") or dev.get("name") or "").strip()
+    s = re.sub(r"^(redmi|xiaomi|mi)\s+", "", s, flags=re.I).strip()
+    return s.lower() or "phone"
 
 
 class App:
